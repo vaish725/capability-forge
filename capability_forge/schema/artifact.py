@@ -18,7 +18,8 @@ be saved (or loaded) in a state that contradicts its own design rationale:
   - a `navigate` step must carry a non-empty `input_value` (its destination). The implicit
     navigation to `target.base_url` happens once, before step 1, and is not itself a StepAction -
     every StepAction with action_type="navigate" is an explicit, additional hop and needs to say
-    where it's going.
+    where it's going. `navigate` is also the one action type allowed to omit `locators` entirely -
+    it targets a URL, not a page element, so there is nothing to find a locator for.
 """
 
 import re
@@ -39,6 +40,25 @@ def extract_template_params(value: str | None) -> set[str]:
     if not value:
         return set()
     return set(TEMPLATE_PARAM_PATTERN.findall(value))
+
+
+def render_template(value: str | None, params: dict[str, str]) -> str | None:
+    """Substitute {{param}} placeholders in value with the given params. The counterpart to
+    extract_template_params: that finds the names, this fills them in. Used by a Surface Driver
+    at replay time to turn a step's raw input_value into the literal text/URL to act on. Raises
+    KeyError if value references a param not present in params - callers should already have
+    validated referenced params against the artifact's declared inputs (the schema's own
+    cross-field check does this at artifact-load time), so a KeyError here means that check was
+    skipped, not that the param is legitimately optional.
+    """
+    if value is None:
+        return None
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return params[name]
+
+    return TEMPLATE_PARAM_PATTERN.sub(_replace, value)
 
 
 class LocatorTier(BaseModel):
@@ -65,7 +85,10 @@ class StepAction(BaseModel):
 
     step_id: str = Field(min_length=1)
     action_type: Literal["click", "type", "navigate", "wait", "select"]
-    locators: list[LocatorTier] = Field(min_length=1)  # ordered, tried in sequence at replay time
+    # No Field(min_length=1) here: "navigate" has no element to locate (it's a direct URL
+    # navigation via input_value) and is the one action type allowed an empty list - enforced
+    # below instead of at the field level, since the rule depends on action_type.
+    locators: list[LocatorTier] = Field(default_factory=list)
     input_value: str | None = None  # e.g. text to type; may reference a param via "{{member_id}}"
     risk: Literal["safe_reversible", "risky_irreversible"]
     description: str = Field(min_length=1)  # human-readable, for review/debugging
@@ -79,6 +102,15 @@ class StepAction(BaseModel):
         needs_value = {"type", "select", "navigate"}
         if self.action_type in needs_value and not self.input_value:
             raise ValueError(f"action_type={self.action_type!r} requires a non-empty input_value")
+        return self
+
+    @model_validator(mode="after")
+    def _only_navigate_may_omit_locators(self) -> "StepAction":
+        # click/type/select/wait all target a specific element and are meaningless with nothing
+        # to find it by; navigate targets a URL, not an element, so it's the one action type that
+        # may have an empty locators list.
+        if self.action_type != "navigate" and len(self.locators) == 0:
+            raise ValueError(f"action_type={self.action_type!r} requires at least one locator")
         return self
 
 

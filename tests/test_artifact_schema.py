@@ -17,6 +17,7 @@ from capability_forge.schema.artifact import (
     StepAction,
     TargetSpec,
     extract_template_params,
+    render_template,
 )
 
 
@@ -130,6 +131,33 @@ def test_step_requires_at_least_one_locator():
         StepAction.model_validate(make_step(locators=[]))
 
 
+@pytest.mark.parametrize("action_type", ["click", "type", "select", "wait"])
+def test_non_navigate_action_types_reject_empty_locators(action_type):
+    # Every action type except navigate targets a specific element; an empty locators list means
+    # there's nothing to find it by.
+    with pytest.raises(ValidationError, match="requires at least one locator"):
+        StepAction.model_validate(
+            make_step(action_type=action_type, locators=[], input_value="value" if action_type in ("type", "select") else None)
+        )
+
+
+def test_navigate_accepts_empty_locators():
+    # navigate targets a URL, not a page element - the one action type allowed to omit locators.
+    step = StepAction.model_validate(
+        make_step(action_type="navigate", input_value="/accounts/{{member_id}}", locators=[])
+    )
+    assert step.locators == []
+
+
+def test_navigate_may_still_carry_locators_if_recorded_with_one():
+    # Allowed, just not required - a discovery run might still attach a locator for review
+    # purposes even though replay's navigate handling never uses it.
+    step = StepAction.model_validate(
+        make_step(action_type="navigate", input_value="/accounts/{{member_id}}")
+    )
+    assert len(step.locators) == 1
+
+
 @pytest.mark.parametrize("action_type", ["type", "select", "navigate"])
 def test_type_select_and_navigate_require_input_value(action_type):
     with pytest.raises(ValidationError):
@@ -176,15 +204,17 @@ def test_step_locators_are_tried_in_declared_order():
 # --- TargetSpec -----------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("base_url", ["ftp://example.com", "example.com", "www.example.com"])
-def test_target_spec_rejects_url_without_http_scheme(base_url):
+@pytest.mark.parametrize("target_base_url", ["ftp://example.com", "example.com", "www.example.com"])
+def test_target_spec_rejects_url_without_http_scheme(target_base_url):
+    # Note: parametrize argument is named target_base_url, not base_url - "base_url" collides
+    # with pytest-playwright's own base_url fixture and pytest resolves the collision incorrectly.
     with pytest.raises(ValidationError):
-        TargetSpec.model_validate({"base_url": base_url, "app_name": "legacy_bank"})
+        TargetSpec.model_validate({"base_url": target_base_url, "app_name": "legacy_bank"})
 
 
-@pytest.mark.parametrize("base_url", ["http://example.com", "https://example.com"])
-def test_target_spec_accepts_http_and_https(base_url):
-    TargetSpec.model_validate({"base_url": base_url, "app_name": "legacy_bank"})
+@pytest.mark.parametrize("target_base_url", ["http://example.com", "https://example.com"])
+def test_target_spec_accepts_http_and_https(target_base_url):
+    TargetSpec.model_validate({"base_url": target_base_url, "app_name": "legacy_bank"})
 
 
 def test_target_spec_tenant_overrides_defaults_to_none():
@@ -328,6 +358,35 @@ def test_extract_template_params_helper():
     assert extract_template_params("no params here") == set()
     assert extract_template_params(None) == set()
     assert extract_template_params("") == set()
+
+
+def test_render_template_substitutes_a_single_param():
+    assert render_template("{{member_id}}", {"member_id": "12345"}) == "12345"
+
+
+def test_render_template_substitutes_multiple_params():
+    assert render_template("{{first}} {{last}}", {"first": "Jane", "last": "Doe"}) == "Jane Doe"
+
+
+def test_render_template_leaves_plain_text_unchanged():
+    assert render_template("no params here", {}) == "no params here"
+
+
+def test_render_template_none_value_returns_none():
+    assert render_template(None, {"member_id": "12345"}) is None
+
+
+def test_render_template_missing_param_raises_key_error():
+    with pytest.raises(KeyError):
+        render_template("{{member_id}}", {})
+
+
+def test_render_template_and_extract_template_params_agree():
+    # The two helpers must stay consistent with each other: whatever names extract_template_params
+    # finds are exactly the names render_template needs supplied to succeed.
+    value = "/accounts/{{member_id}}/transfer/{{to_account}}"
+    params = {name: "x" for name in extract_template_params(value)}
+    assert render_template(value, params) == "/accounts/x/transfer/x"
 
 
 # --- cross-field: checkpoint.extract must match declared outputs exactly -----------------------
