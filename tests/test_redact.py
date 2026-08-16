@@ -88,3 +88,16 @@ def test_redact_handles_non_string_non_dict_values():
     record = {"count": 5, "confirmed": True, "amount": 12.5, "note": None}
     result = redact(record)
     assert result == record
+
+
+def test_known_limitation_sensitive_key_inside_a_json_encoded_string_is_not_masked():
+    # Documents a confirmed, named limitation (see the module docstring): redact() only recurses
+    # through actual dict/list structure, not through the text of a string. If a value is itself
+    # a JSON-encoded blob containing a sensitive key, that key is not caught. This is currently a
+    # non-issue because no field in the schema is allowed to hold a serialized object as a string
+    # (input_value is always plain text or a URL; log-line fields are flat strings). This test
+    # exists to fail loudly if that assumption is ever violated by a future field without anyone
+    # updating this limitation's documentation.
+    record = {"raw_payload": '{"account_number": "123456789"}'}
+    result = redact(record)
+    assert result["raw_payload"] == '{"account_number": "123456789"}'

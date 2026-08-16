@@ -177,6 +177,18 @@ def test_invalid_model_tag_raises():
         guardrail.classify_risk("Search", model_tag="not_a_real_tag")
 
 
+def test_known_limitation_risky_action_in_unmatched_phrasing_is_not_escalated():
+    # Documents a confirmed, named limitation (see the module docstring): the keyword heuristic
+    # only escalates on words it's configured to look for. A genuinely irreversible action
+    # described in phrasing outside the configured keyword list (here "Finalize Payment" instead
+    # of "confirm"/"submit"/"delete"/"transfer") is not caught, and silently stays at whatever the
+    # model self-tagged. This is not a bug - it's the documented boundary of what the heuristic
+    # can do - this test exists so that boundary is asserted, not just described in prose.
+    guardrail = make_guardrail()
+    risk = guardrail.classify_risk("Finalize Payment", model_tag="safe_reversible")
+    assert risk == "safe_reversible"
+
+
 @pytest.mark.parametrize("keyword_text", ["confirm", "submit", "delete", "transfer"])
 def test_each_configured_keyword_escalates(keyword_text):
     guardrail = make_guardrail()

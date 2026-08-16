@@ -6,15 +6,21 @@ Wraps every action proposed in discovery or replay with three checks, applied in
      reason "policy_violation" (Section 8 of the design doc) rather than executing.
   2. Risk classification - is this action safe_reversible or risky_irreversible? The model tags
      its own proposed action at discovery time; a keyword heuristic can only escalate that tag
-     (safe -> risky), never downgrade it, so a determined mislabel can at worst be caught late,
-     never silently waved through as safer than it is.
+     (safe -> risky), never downgrade it. The escalate-only direction is a real, useful guarantee:
+     the heuristic can never talk a genuinely risky action back down to safe. It is not a
+     guarantee that every risky action gets caught - see the limitation below.
   3. Redaction - delegated to utils.redact, using this policy's configured sensitive_fields.
 
-Known limitation, worth stating plainly rather than leaving implicit: the risk heuristic is a
-keyword substring match against the target element's visible text. It trusts the LLM's self-tagged
-risk unless a keyword overrides it - an adversarial prompt or a mislabeled UI could still slip a
-risky action through as "safe" if it also avoids every configured keyword. This is a known gap,
-not a solved problem.
+Known limitations, worth stating plainly rather than leaving implicit:
+  - The risk heuristic is a keyword substring match against the target element's visible text. It
+    trusts the LLM's self-tagged risk unless a keyword overrides it. Two distinct ways this can
+    still miss a genuinely risky action: an adversarial prompt that deliberately mislabels its own
+    action, or - more mundanely and more likely in practice - a risky action described in phrasing
+    that simply isn't one of the configured keywords (e.g. a button labeled "Finalize" or
+    "Process" instead of "confirm"/"submit"/"delete"/"transfer"). Either way, the action silently
+    stays at whatever the model self-tagged. This is a known gap, not a solved problem, and the
+    keyword list is only as good as whoever configured config/allowlist.yaml anticipating the
+    target UI's actual wording.
 """
 
 from pathlib import Path

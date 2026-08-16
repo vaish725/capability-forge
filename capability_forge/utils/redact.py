@@ -11,10 +11,21 @@ by shape (its value looks like an SSN even though nobody thought to name the fie
   - Pattern redaction: scans string values (in non-sensitive fields) for an SSN-shaped substring
     and masks just that substring, regardless of which field it was found in.
 
-Known limitation, documented rather than silently assumed away: field-name matching is exact, so
-a field named "acct_num" instead of "account_number" is not caught by name - only the pattern
-layer offers any protection for unexpectedly-named or freeform fields, and only for the one shape
-it knows about (SSNs). This is not a general PII scanner.
+Known limitations, documented rather than silently assumed away:
+  - Field-name matching is exact, so a field named "acct_num" instead of "account_number" is not
+    caught by name - only the pattern layer offers any protection for unexpectedly-named or
+    freeform fields, and only for the one shape it knows about (SSNs). This is not a general PII
+    scanner.
+  - Neither layer parses a string value that itself contains embedded structured data (e.g. a
+    JSON-encoded object as a string). A sensitive key one level inside such a string would pass
+    through unmasked, since redact() only recurses through actual Python dict/list structure, not
+    through the contents of a string. Confirmed non-issue for what this schema currently produces:
+    StepAction.input_value only ever holds plain text-to-type or a navigate destination (never a
+    serialized object, checked against every action type that requires it), and the log line
+    schema (Section 7.2 of the design doc) is flat strings only - raw page-state dumps are written
+    to their own files (dom_snapshot.html / a11y_tree.json), never embedded in a log line or an
+    artifact field. If a future field is ever allowed to carry structured data as a string, this
+    limitation must be re-examined before that field is redacted with this function.
 """
 
 import re
