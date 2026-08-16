@@ -221,6 +221,17 @@
           <td><input type="text" id="txtAmount" name="txtAmount"></td>
         </tr>
         <tr>
+          <!-- The one native <select> on the fixture, so the "select" action_type has a real
+               element to target, not just click/type. -->
+          <td><label for="selTransferType">Transfer Type:</label></td>
+          <td>
+            <select id="selTransferType" name="selTransferType">
+              <option value="checking">Checking</option>
+              <option value="savings">Savings</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
           <td colspan="2">
             <button type="button" class="btn" id="btnConfirmTransfer" onclick="parent.handleTransfer('${memberId}')">Confirm Transfer</button>
           </td>
@@ -250,9 +261,10 @@
       return;
     }
 
+    const transferType = doc.getElementById("selTransferType").value;
     member.balance -= amount;
     const reference = "TXN-" + Math.floor(100000 + Math.random() * 900000);
     resultArea.innerHTML =
-      `<p class="transfer-confirmation">Transfer confirmed. Reference #: ${reference}</p>`;
+      `<p class="transfer-confirmation">Transfer confirmed from ${transferType} account. Reference #: ${reference}</p>`;
   }
 </script>

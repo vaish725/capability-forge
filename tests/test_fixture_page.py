@@ -105,7 +105,23 @@ def test_successful_transfer_shows_a_confirmation_reference(logged_in_page):
     frame.get_by_label("To Account:").fill("55555")
     frame.get_by_label("Amount:").fill("100")
     frame.get_by_role("button", name="Confirm Transfer").click()
-    assert "Reference #: TXN-" in frame.locator("#transferResult").inner_text()
+    result_text = frame.locator("#transferResult").inner_text()
+    assert "Reference #: TXN-" in result_text
+    # Transfer Type defaults to "Checking" if never touched - confirms the <select>'s default
+    # option is honored, not just that a value happened to be present.
+    assert "from checking account" in result_text
+
+
+def test_transfer_type_select_can_be_changed(logged_in_page):
+    logged_in_page.get_by_label("Member ID:").fill("12345")
+    logged_in_page.get_by_role("button", name="Search").click()
+    frame = logged_in_page.frame_locator("#detailFrame")
+    frame.get_by_role("button", name="Transfer Funds").click()
+    frame.get_by_label("To Account:").fill("55555")
+    frame.get_by_label("Amount:").fill("100")
+    frame.get_by_label("Transfer Type:").select_option("savings")
+    frame.get_by_role("button", name="Confirm Transfer").click()
+    assert "from savings account" in frame.locator("#transferResult").inner_text()
 
 
 def test_over_balance_transfer_is_a_business_outcome(logged_in_page):
