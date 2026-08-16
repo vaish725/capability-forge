@@ -1,0 +1,258 @@
+<!--
+  Hostile legacy banking fixture.
+
+  Purpose: a fully self-contained, offline test target for the surface driver, the locator-tier
+  fallback (role -> css -> coordinate), and checkpoint verification, without depending on a real
+  target site's markup or availability. It is also the designated target for the injected-error
+  replay demo (see /evidence/): specific member IDs deterministically trigger a business_outcome,
+  a recoverable interstitial, or a hard_failure, so those outcome types can be demonstrated on
+  demand rather than hoped for.
+
+  Deliberately "hostile", on purpose, in the ways real legacy banking back-office UIs are:
+    - Table-based layout for forms and results, not semantic <section>/<article> markup.
+    - No data-testid attributes anywhere - this fixture exists specifically because production
+      legacy apps never have them either.
+    - IDs in an old ASP.NET WebForms flavor (txtUserName, btnLogin) - present, but not a stable
+      contract; a markup regen would change every one of them.
+    - A single ".btn" class reused across every button on the page, so a naive CSS selector like
+      ".btn" alone is ambiguous - the fixture only becomes reliably automatable once locators
+      fall back to role + accessible name, which is the whole thesis of the locator-tier design.
+    - The account detail view renders inside an <iframe>, so the driver has to handle frame
+      context switching, not just top-level DOM queries.
+
+  What is NOT hostile, deliberately: every interactive element has a real accessible role and a
+  stable accessible name (a <label for> pairing or visible button/link text). That stability is
+  the point being demonstrated - role-based locators survive markup churn that ID/class-based
+  locators don't, without the page needing to be "clean" in any other sense.
+-->
+<title>First Fidelity Member Services</title>
+<style>
+  /* Deliberately dated visual styling: default serif font, gray page background, table borders.
+     Cosmetic only - none of this affects locator strategy, included purely for flavor. */
+  body { font-family: "Times New Roman", serif; background: #d4d0c8; margin: 20px; }
+  table { border-collapse: collapse; background: #ffffff; }
+  table.layout td { padding: 4px 8px; border: 1px solid #808080; }
+  h1 { font-size: 18px; background: #003366; color: #ffffff; padding: 6px; margin: 0 0 10px 0; }
+  .btn { background: #d4d0c8; border: 2px outset #ffffff; padding: 3px 12px; font-family: inherit; }
+  .alert { color: #a00000; font-weight: bold; border: 1px solid #a00000; padding: 6px; background: #fff0f0; }
+  .notice-overlay {
+    position: fixed; top: 30%; left: 35%; width: 30%; background: #ffffcc;
+    border: 2px solid #808080; padding: 16px; text-align: center;
+  }
+  iframe { width: 100%; height: 260px; border: 2px inset #808080; background: #ffffff; }
+  a.legacy-link { color: #0000ee; }
+</style>
+
+<h1>First Fidelity Member Services - Internal Portal</h1>
+
+<!-- ===================== LOGIN SCREEN ===================== -->
+<div id="screenLogin">
+  <table class="layout">
+    <tr>
+      <td><label for="txtUserName">User Name:</label></td>
+      <td><input type="text" id="txtUserName" name="txtUserName"></td>
+    </tr>
+    <tr>
+      <td><label for="txtPassword">Password:</label></td>
+      <td><input type="password" id="txtPassword" name="txtPassword"></td>
+    </tr>
+    <tr>
+      <td colspan="2">
+        <button type="button" class="btn" id="btnLogin" onclick="handleLogin()">Login</button>
+      </td>
+    </tr>
+  </table>
+  <p id="loginMessage"></p>
+</div>
+
+<!-- ===================== ACCOUNTS / SEARCH SCREEN ===================== -->
+<div id="screenAccounts" style="display:none">
+  <table class="layout">
+    <tr>
+      <td><label for="txtMemberId">Member ID:</label></td>
+      <td><input type="text" id="txtMemberId" name="txtMemberId"></td>
+      <td><button type="button" class="btn" id="btnSearch" onclick="handleSearch()">Search</button></td>
+    </tr>
+  </table>
+
+  <div id="searchResultArea"></div>
+
+  <!-- Account detail renders inside this frame once a search succeeds. Content is injected via
+       srcdoc at runtime so the whole fixture stays a single offline file with no second
+       resource to fetch - the driver still has to treat it as a real frame boundary. -->
+  <iframe id="detailFrame" title="Account Detail" style="display:none"></iframe>
+</div>
+
+<!-- Session-timeout interstitial. Shown only for the one member ID wired to trigger it
+     (see MEMBERS.recoverableInterstitial below), so the "recoverable" outcome type has a
+     deterministic, reproducible trigger instead of a random one. -->
+<div id="sessionNotice" class="notice-overlay" style="display:none">
+  <p>Your session will expire soon.</p>
+  <button type="button" class="btn" id="btnContinueSession" onclick="dismissSessionNotice()">Continue</button>
+</div>
+
+<script>
+  // Tiny in-memory "database" standing in for a real backend. Each key is a member ID a
+  // discovery/replay run can search for; each maps to the record shown on the detail screen.
+  // account_number intentionally has real digits so a recorded artifact's redaction of that
+  // field is meaningfully testable, not just theoretical.
+  const MEMBERS = {
+    "12345": { name: "Jane Doe", account_number: "9988776655", balance: 4500.00 },
+    "67890": { name: "Robert Smith", account_number: "1122334455", balance: 250.75 },
+    // This ID deterministically triggers the session-notice interstitial before showing detail -
+    // the fixture's reproducible trigger for the "recoverable" outcome type.
+    "88888": { name: "Maria Lopez", account_number: "5566778899", balance: 10234.10, recoverableInterstitial: true },
+  };
+  // This ID deterministically renders a dead-end error state with no valid continuation - the
+  // fixture's reproducible trigger for the "hard_failure" outcome type (whatever checkpoint a
+  // replay expects next, e.g. the balance element, will never appear).
+  const HARD_FAILURE_MEMBER_ID = "00000";
+
+  function handleLogin() {
+    const username = document.getElementById("txtUserName").value.trim();
+    const password = document.getElementById("txtPassword").value.trim();
+    const message = document.getElementById("loginMessage");
+
+    if (!username || !password) {
+      message.className = "alert";
+      message.setAttribute("role", "alert");
+      message.textContent = "User Name and Password are both required.";
+      return;
+    }
+    if (username.toLowerCase() === "locked") {
+      // A deliberate business_outcome at the login step: an expected, named non-error result,
+      // not a system error.
+      message.className = "alert";
+      message.setAttribute("role", "alert");
+      message.textContent = "This account is locked. Please contact support.";
+      return;
+    }
+
+    document.getElementById("screenLogin").style.display = "none";
+    document.getElementById("screenAccounts").style.display = "block";
+  }
+
+  function handleSearch() {
+    const memberId = document.getElementById("txtMemberId").value.trim();
+    const resultArea = document.getElementById("searchResultArea");
+    const frame = document.getElementById("detailFrame");
+    frame.style.display = "none";
+    resultArea.innerHTML = "";
+
+    if (memberId === HARD_FAILURE_MEMBER_ID) {
+      resultArea.innerHTML =
+        '<p class="alert" role="alert">An unexpected error occurred. Error code: SYS-500.</p>';
+      return;
+    }
+
+    const member = MEMBERS[memberId];
+    if (!member) {
+      // business_outcome: a named, expected non-error result, not a hard_failure.
+      resultArea.innerHTML = '<p class="alert" role="alert">No member found matching that ID.</p>';
+      return;
+    }
+
+    if (member.recoverableInterstitial) {
+      // Stash which member to load once the interstitial is dismissed, then show it.
+      window._pendingMemberId = memberId;
+      document.getElementById("sessionNotice").style.display = "block";
+      return;
+    }
+
+    showMemberDetail(memberId);
+  }
+
+  function dismissSessionNotice() {
+    document.getElementById("sessionNotice").style.display = "none";
+    if (window._pendingMemberId) {
+      showMemberDetail(window._pendingMemberId);
+      window._pendingMemberId = null;
+    }
+  }
+
+  function showMemberDetail(memberId) {
+    const member = MEMBERS[memberId];
+    const frame = document.getElementById("detailFrame");
+    frame.srcdoc = buildDetailFrameHtml(memberId, member);
+    frame.style.display = "block";
+  }
+
+  // Builds the account-detail document shown inside the iframe. Kept as a template string
+  // (rather than a second file) so the whole fixture remains one self-contained, offline page.
+  function buildDetailFrameHtml(memberId, member) {
+    return `
+      <style>
+        body { font-family: "Times New Roman", serif; margin: 10px; }
+        table.layout td { padding: 3px 8px; border: 1px solid #808080; }
+        .btn { background: #d4d0c8; border: 2px outset #ffffff; padding: 3px 12px; font-family: inherit; }
+        .alert { color: #a00000; font-weight: bold; border: 1px solid #a00000; padding: 6px; background: #fff0f0; }
+        .transfer-confirmation { color: #006600; font-weight: bold; border: 1px solid #006600; padding: 6px; background: #f0fff0; }
+      </style>
+      <table class="layout">
+        <tr><td>Member Name:</td><td class="member-name">${member.name}</td></tr>
+        <tr><td>Account Number:</td><td class="acct-no">${member.account_number}</td></tr>
+        <!-- balance-value is a deliberately stable class name: it is the fixture's literal
+             implementation of the checkpoint.extract example already used in the schema design
+             ({"balance": "css=.balance-value"}), so a recorded artifact's checkpoint can point
+             straight at it. -->
+        <tr><td>Current Balance:</td><td class="balance-value">$${member.balance.toFixed(2)}</td></tr>
+      </table>
+
+      <p><button type="button" class="btn" id="btnTransferFunds" onclick="parent.showTransferForm('${memberId}')">Transfer Funds</button></p>
+      <div id="transferArea"></div>
+    `;
+  }
+
+  // Called from inside the detail iframe; runs in the top-level page so it can reach back into
+  // the same iframe document to inject the transfer form. Kept top-level (rather than duplicated
+  // inside the iframe template) so there is one source of truth for the transfer flow's markup.
+  function showTransferForm(memberId) {
+    const frame = document.getElementById("detailFrame");
+    const doc = frame.contentDocument;
+    const area = doc.getElementById("transferArea");
+    area.innerHTML = `
+      <table class="layout">
+        <tr>
+          <td><label for="txtToAccount">To Account:</label></td>
+          <td><input type="text" id="txtToAccount" name="txtToAccount"></td>
+        </tr>
+        <tr>
+          <td><label for="txtAmount">Amount:</label></td>
+          <td><input type="text" id="txtAmount" name="txtAmount"></td>
+        </tr>
+        <tr>
+          <td colspan="2">
+            <button type="button" class="btn" id="btnConfirmTransfer" onclick="parent.handleTransfer('${memberId}')">Confirm Transfer</button>
+          </td>
+        </tr>
+      </table>
+      <div id="transferResult"></div>
+    `;
+  }
+
+  // Also top-level for the same reason as showTransferForm: one place owns the flow logic, the
+  // iframe only ever holds the rendered markup for whichever step is currently showing.
+  function handleTransfer(memberId) {
+    const member = MEMBERS[memberId];
+    const frame = document.getElementById("detailFrame");
+    const doc = frame.contentDocument;
+    const amountInput = doc.getElementById("txtAmount");
+    const resultArea = doc.getElementById("transferResult");
+    const amount = parseFloat(amountInput.value);
+
+    if (!amountInput.value || isNaN(amount) || amount <= 0) {
+      resultArea.innerHTML = '<p class="alert" role="alert">Enter a valid transfer amount.</p>';
+      return;
+    }
+    if (amount > member.balance) {
+      // business_outcome: an expected, named result (insufficient funds), not a system error.
+      resultArea.innerHTML = '<p class="alert" role="alert">Insufficient funds for this transfer.</p>';
+      return;
+    }
+
+    member.balance -= amount;
+    const reference = "TXN-" + Math.floor(100000 + Math.random() * 900000);
+    resultArea.innerHTML =
+      `<p class="transfer-confirmation">Transfer confirmed. Reference #: ${reference}</p>`;
+  }
+</script>
