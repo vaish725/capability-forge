@@ -67,6 +67,34 @@ def test_observe_returns_url_title_and_accessibility_tree(driver):
     assert "textbox" in snapshot.accessibility_tree
 
 
+def test_observe_descends_into_iframe_content(driver):
+    # A plain page.locator("body").aria_snapshot() treats <iframe> as an opaque leaf and never
+    # shows what's inside it - this is a real bug that was found and fixed, not a hypothetical:
+    # it would make an LLM totally blind to this fixture's entire account-detail/transfer flow,
+    # which lives inside the iframe. Confirms observe() actually descends into it.
+    login_via_driver(driver)
+    search_via_driver(driver, "12345")
+    snapshot = driver.observe()
+    assert "Jane Doe" in snapshot.accessibility_tree
+    assert "$4500.00" in snapshot.accessibility_tree
+    assert "Transfer Funds" in snapshot.accessibility_tree
+
+
+def test_observe_reflects_iframe_state_changes_across_steps(driver):
+    # The dead-end guard fingerprints state off this exact string - if iframe content changes
+    # aren't reflected here, the guard would falsely conclude the page never changed while
+    # actually progressing through the transfer flow. Confirms two genuinely different iframe
+    # states produce genuinely different accessibility_tree strings.
+    login_via_driver(driver)
+    search_via_driver(driver, "12345")
+    before = driver.observe().accessibility_tree
+    driver.act(step(action_type="click", locators=[locator("role", 'role=button[name="Transfer Funds"]')]))
+    after = driver.observe().accessibility_tree
+    assert before != after
+    assert "To Account:" in after
+    assert "To Account:" not in before
+
+
 # --- click: role tier, css tier, fallback, ambiguity, coordinate ------------------------------
 
 
@@ -250,3 +278,84 @@ def test_verify_checkpoint_raises_when_locator_never_appears(driver):
     )
     with pytest.raises(CheckpointNotReachedError):
         driver.verify_checkpoint(checkpoint)
+
+
+# --- resolve_role_name / build_locator_tiers: what the discovery loop uses to turn an LLM's -----
+# --- role+name proposal into something the artifact schema and driver can both act on ----------
+
+
+def test_resolve_role_name_returns_the_matching_locator(driver):
+    login_via_driver(driver)
+    found = driver.resolve_role_name("button", "Search")
+    assert found is not None
+    assert found.get_attribute("id") == "btnSearch"
+
+
+def test_resolve_role_name_returns_none_when_nothing_matches(driver):
+    assert driver.resolve_role_name("button", "Does Not Exist") is None
+
+
+def test_build_locator_tiers_includes_role_and_css_id_fallback(driver):
+    tiers = driver.build_locator_tiers("button", "Login")
+    assert tiers[0].strategy == "role"
+    assert tiers[0].value == 'role=button[name="Login"]'
+    assert tiers[1].strategy == "css"
+    assert tiers[1].value == "#btnLogin"
+
+
+def test_build_locator_tiers_raises_when_role_name_does_not_resolve(driver):
+    with pytest.raises(LocatorResolutionError):
+        driver.build_locator_tiers("button", "Does Not Exist")
+
+
+def test_build_locator_tiers_produced_tiers_actually_work_via_act(driver):
+    # The tiers build_locator_tiers produces must be usable by act() itself, not just structurally
+    # valid - round-trip them through a real StepAction.
+    tiers = driver.build_locator_tiers("button", "Login")
+    driver.act(step(action_type="type", locators=[locator("css", "#txtUserName")], input_value="jdoe"))
+    driver.act(step(action_type="type", locators=[locator("css", "#txtPassword")], input_value="secret"))
+    driver.act(step(action_type="click", locators=tiers))
+    assert driver.page.locator("#screenAccounts").is_visible()
+
+
+# --- role=X[name="Y"] fallback: roles that don't compute accessible name from visible text ------
+
+
+def test_resolve_role_name_falls_back_to_text_match_for_alert_role(driver):
+    # role="alert" (a live region) does not compute its accessible name from content per the ARIA
+    # name-computation spec, even though the accessibility tree displays that text against that
+    # role - role=alert[name="..."] matches nothing, so this exercises the fallback to a
+    # role+visible-text filter instead. Found while building the discovery loop, not anticipated.
+    login_via_driver(driver)
+    driver.act(step(action_type="type", locators=[locator("css", "#txtMemberId")], input_value="00001"))
+    driver.act(step(action_type="click", locators=[locator("role", 'role=button[name="Search"]')]))
+
+    found = driver.resolve_role_name("alert", "No member found matching that ID.")
+    assert found is not None
+    assert found.inner_text() == "No member found matching that ID."
+
+
+def test_checkpoint_with_role_name_locator_resolves_via_fallback_for_alert(driver):
+    # Proves the fallback works at the same layer replay uses (verify_checkpoint), not just via
+    # resolve_role_name - a checkpoint built from a role=alert[name=...] locator (exactly what the
+    # discovery loop's "done" tool produces for a business_outcome) must actually verify.
+    login_via_driver(driver)
+    driver.act(step(action_type="type", locators=[locator("css", "#txtMemberId")], input_value="00001"))
+    driver.act(step(action_type="click", locators=[locator("role", 'role=button[name="Search"]')]))
+
+    checkpoint = Checkpoint(
+        description="Member not found",
+        locator=locator("role", 'role=alert[name="No member found matching that ID."]'),
+        extract=None,
+    )
+    outputs = driver.verify_checkpoint(checkpoint)
+    assert outputs == {}
+
+
+def test_resolve_role_name_returns_none_when_fallback_also_ambiguous(driver):
+    # Two alerts with overlapping text would make the fallback ambiguous too - confirm it's held
+    # to the same uniqueness standard as the primary path, not silently permissive.
+    driver.page.set_content(
+        '<div role="alert">Duplicate message</div><div role="alert">Duplicate message</div>'
+    )
+    assert driver.resolve_role_name("alert", "Duplicate message") is None
