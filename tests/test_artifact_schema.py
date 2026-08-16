@@ -130,22 +130,36 @@ def test_step_requires_at_least_one_locator():
         StepAction.model_validate(make_step(locators=[]))
 
 
-@pytest.mark.parametrize("action_type", ["type", "select"])
-def test_type_and_select_require_input_value(action_type):
+@pytest.mark.parametrize("action_type", ["type", "select", "navigate"])
+def test_type_select_and_navigate_require_input_value(action_type):
     with pytest.raises(ValidationError):
         StepAction.model_validate(make_step(action_type=action_type, input_value=None))
 
 
-@pytest.mark.parametrize("action_type", ["type", "select"])
-def test_type_and_select_reject_empty_string_input_value(action_type):
+@pytest.mark.parametrize("action_type", ["type", "select", "navigate"])
+def test_type_select_and_navigate_reject_empty_string_input_value(action_type):
     with pytest.raises(ValidationError):
         StepAction.model_validate(make_step(action_type=action_type, input_value=""))
 
 
-@pytest.mark.parametrize("action_type", ["click", "navigate", "wait", "extract"])
+@pytest.mark.parametrize("action_type", ["click", "wait"])
 def test_other_action_types_allow_missing_input_value(action_type):
     step = StepAction.model_validate(make_step(action_type=action_type, input_value=None))
     assert step.input_value is None
+
+
+def test_extract_is_not_a_valid_action_type():
+    # Extraction only happens at the checkpoint; a mid-flow "extract" step has nowhere to put its
+    # result (no output_key field), so it was dropped from the action_type literal entirely.
+    with pytest.raises(ValidationError):
+        StepAction.model_validate(make_step(action_type="extract"))
+
+
+def test_navigate_with_destination_accepted():
+    step = StepAction.model_validate(
+        make_step(action_type="navigate", input_value="/accounts/{{member_id}}")
+    )
+    assert step.input_value == "/accounts/{{member_id}}"
 
 
 def test_step_locators_are_tried_in_declared_order():

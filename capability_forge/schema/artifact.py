@@ -12,7 +12,13 @@ be saved (or loaded) in a state that contradicts its own design rationale:
     replay never discovers a missing param mid-run instead of at artifact-load time.
   - `checkpoint.extract` is where declared outputs are actually read from the page, so its keys
     must exactly match the declared `outputs` names - otherwise "what the checkpoint returns" and
-    "what the artifact promises to return" could silently drift apart.
+    "what the artifact promises to return" could silently drift apart. This is also why
+    StepAction.action_type has no "extract" option: a mid-flow extract would have nowhere to put
+    its result, so all extraction is pushed to this one place.
+  - a `navigate` step must carry a non-empty `input_value` (its destination). The implicit
+    navigation to `target.base_url` happens once, before step 1, and is not itself a StepAction -
+    every StepAction with action_type="navigate" is an explicit, additional hop and needs to say
+    where it's going.
 """
 
 import re
@@ -48,21 +54,30 @@ class LocatorTier(BaseModel):
 
 class StepAction(BaseModel):
     """A single recorded action: what to do, where to find the element (in fallback order), and
-    the risk tier it was frozen at during discovery."""
+    the risk tier it was frozen at during discovery.
+
+    No "extract" action_type: data extraction only happens at the checkpoint (see
+    Checkpoint.extract), never mid-flow. A mid-flow extract step would have nowhere to put its
+    result today (StepAction has no output_key), so keeping extraction to a single place means
+    success-verification and output-extraction can never drift apart into two mechanisms."""
 
     model_config = ConfigDict(extra="forbid")
 
     step_id: str = Field(min_length=1)
-    action_type: Literal["click", "type", "navigate", "wait", "extract", "select"]
+    action_type: Literal["click", "type", "navigate", "wait", "select"]
     locators: list[LocatorTier] = Field(min_length=1)  # ordered, tried in sequence at replay time
     input_value: str | None = None  # e.g. text to type; may reference a param via "{{member_id}}"
     risk: Literal["safe_reversible", "risky_irreversible"]
     description: str = Field(min_length=1)  # human-readable, for review/debugging
 
     @model_validator(mode="after")
-    def _typed_or_selected_value_must_be_present(self) -> "StepAction":
-        # "type" and "select" are meaningless without something to type or select.
-        if self.action_type in ("type", "select") and not self.input_value:
+    def _navigation_and_input_actions_require_a_value(self) -> "StepAction":
+        # "type"/"select" are meaningless without something to type or select. "navigate" is
+        # meaningless without a destination: the replay engine only navigates to target.base_url
+        # implicitly, once, before step 1 - any explicit navigate step in the flow is going
+        # somewhere else and must say where via input_value (a path/URL, optionally templated).
+        needs_value = {"type", "select", "navigate"}
+        if self.action_type in needs_value and not self.input_value:
             raise ValueError(f"action_type={self.action_type!r} requires a non-empty input_value")
         return self
 
