@@ -1,0 +1,19 @@
+# Core
+anthropic==0.122.0
+playwright==1.62.0
+pydantic==2.13.4
+
+# Optional thin API (stretch goal 1)
+fastapi==0.141.1
+uvicorn==0.52.3
+
+# Config and env
+pyyaml==6.0.3
+python-dotenv==1.2.2
+
+# Structured logging
+structlog==26.1.0
+
+# Testing
+pytest==9.1.1
+httpx==0.28.1

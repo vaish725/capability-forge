@@ -1,0 +1,32 @@
+# Internal planning docs, not part of the public deliverable
+prd.md
+build_journey.md
+BUILD_JOURNEY.md
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Playwright
+playwright-report/
+test-results/
+
+# Run artifacts that are generated locally, not committed wholesale
+# (specific fixture examples under evidence/ are added explicitly with -f when needed)
+evidence/*
+!evidence/.gitkeep
+
+# OS/editor cruft
+.DS_Store
+.vscode/
+.idea/

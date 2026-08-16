@@ -1,0 +1,35 @@
+# Guardrail allowlist: explicit domains and action types permitted for discovery and replay.
+# Any action outside this list is blocked before execution and logged as a hard_failure with
+# reason "policy_violation". Update allowed_domains once the discovery target is finalized.
+
+allowed_domains:
+  - example.com   # placeholder, replace with the confirmed discovery/replay target domain
+
+# Action types permitted per domain. "*" applies to all domains listed above.
+allowed_action_types:
+  "*":
+    - click
+    - type
+    - navigate
+    - wait
+    - extract
+    - select
+
+# Risk classification keyword heuristic: any proposed action whose visible text/name contains one
+# of these words is force-escalated to risky_irreversible regardless of the model's own tag.
+risky_keywords:
+  - confirm
+  - submit
+  - delete
+  - transfer
+  - pay
+  - remove
+
+# Field names that must be redacted before any record (log line or artifact) is written to disk.
+sensitive_fields:
+  - account_number
+  - ssn
+  - full_name
+  - email
+  - password
+  - token
