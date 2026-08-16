@@ -24,7 +24,7 @@ be saved (or loaded) in a state that contradicts its own design rationale:
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -80,6 +80,13 @@ class StepAction(BaseModel):
         if self.action_type in needs_value and not self.input_value:
             raise ValueError(f"action_type={self.action_type!r} requires a non-empty input_value")
         return self
+
+
+# The set of valid action types, derived from StepAction's own field rather than duplicated as a
+# separate literal list. Anything that needs to validate an action type against this taxonomy
+# (e.g. the guardrail allowlist config) imports this constant instead of hardcoding the list, so
+# the two can never drift out of sync the way action_type and the checkpoint invariant briefly did.
+ACTION_TYPES: tuple[str, ...] = get_args(StepAction.model_fields["action_type"].annotation)
 
 
 class Checkpoint(BaseModel):

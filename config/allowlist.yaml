@@ -5,14 +5,15 @@
 allowed_domains:
   - example.com   # placeholder, replace with the confirmed discovery/replay target domain
 
-# Action types permitted per domain. "*" applies to all domains listed above.
+# Action types permitted per domain. "*" applies to all domains listed above. Must be a subset of
+# StepAction.action_type in capability_forge/schema/artifact.py - validated against it at load
+# time, so this list can never silently drift out of sync with the schema.
 allowed_action_types:
   "*":
     - click
     - type
     - navigate
     - wait
-    - extract
     - select
 
 # Risk classification keyword heuristic: any proposed action whose visible text/name contains one
