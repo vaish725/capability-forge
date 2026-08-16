@@ -11,9 +11,43 @@ replay.
 
 ## Status
 
-Repository scaffolding only. Discovery loop, replay engine, and guardrails are not implemented
-yet. Setup instructions and a copy-pasteable demo path will be added here once the core loop is
-working end to end.
+In progress. Built and tested so far: the capability artifact schema, the guardrail policy
+(allowlist, risk classification, redaction), the Playwright surface driver, and the discovery loop
+itself. Not yet built: the replay engine, artifact recorder, and human-in-the-loop escalation. The
+demo path below is real and runnable today for discovery mode; a replay command will be added here
+once that engine exists.
+
+## Setup
+
+- Python 3.11+
+- `pip install -r requirements.txt`
+- `playwright install chromium`
+- Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` (required for discovery mode only -
+  replay mode is designed to run fully offline, once it exists)
+
+## Demo path
+
+The guardrail allowlist checks a real domain, and `file://` URLs have none - so the bundled
+fixture is served locally rather than opened directly. In one terminal:
+
+```
+python -m http.server 8000 --directory fixtures
+```
+
+In another:
+
+```
+python -m capability_forge.discover --goal "Look up the balance for member 12345" --target "http://127.0.0.1:8000/hostile_legacy_page.html"
+```
+
+Prints the stop reason, every step the agent took (with its risk classification), and the
+verified checkpoint once the run completes. `--headless` runs without a visible browser window;
+omit it to watch the run happen. `--max-steps` and `--timeout-seconds` override the loop's
+defaults (25 steps, 180 seconds) if needed. No live network dependency other than the Anthropic
+API call itself.
+
+A replay command (`python -m capability_forge.replay ...`) will be added here once the replay
+engine is implemented.
 
 ## Folder structure
 
