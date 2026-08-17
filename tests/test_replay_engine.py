@@ -5,6 +5,7 @@ plain success, a locator falling back to a later tier (recoverable_then_success)
 outcome, and each of the ways a run can hard_failure.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from capability_forge.guardrails.policy import AllowlistPolicy, Guardrail
 from capability_forge.replay.engine import ParamValidationError, ReplayEngine
 from capability_forge.schema.artifact import CapabilityArtifact, Checkpoint, InputParam, LocatorTier, OutputField, StepAction, TargetSpec
 from capability_forge.surfaces.playwright_driver import PlaywrightDriver
+from capability_forge.utils.evidence import EvidenceWriter
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "hostile_legacy_page.html"
 FIXTURE_URL = f"file://{FIXTURE_PATH}"
@@ -275,3 +277,75 @@ def test_hard_failure_when_guardrail_blocks_an_action_type(driver, fixture_serve
     assert result.status == "hard_failure"
     assert result.failed_step_id == "s1"
     assert "blocked by policy" in result.observed_state
+
+
+# --- evidence logging --------------------------------------------------------------------------
+# An EvidenceWriter is entirely optional (all tests above pass none); these tests cover what gets
+# written to disk when one is supplied, using the exact same log.jsonl schema as discovery.
+
+
+def test_evidence_writer_logs_one_line_per_step_plus_a_terminal_summary(driver, guardrail, fixture_server, tmp_path):
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = LOGIN_STEPS + [
+        step("s4", "type", [locator(value='role=textbox[name="Member ID:"]')], "12345", "Enter member id"),
+        step("s5", "click", [locator(value='role=button[name="Search"]')], None, "Search"),
+    ]
+    checkpoint = Checkpoint(description="Balance shown", locator=locator(value='role=cell[name="$4500.00"]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+    writer = EvidenceWriter(run_id="test_replay_success", mode="replay", root=tmp_path)
+
+    result = ReplayEngine(driver, guardrail, evidence_writer=writer).run(art)
+
+    assert result.status == "success"
+    log_lines = [json.loads(line) for line in (writer.run_dir / "log.jsonl").read_text().splitlines()]
+    assert len(log_lines) == len(steps) + 1  # one line per step, plus the terminal summary line
+    assert [line["step_id"] for line in log_lines[:-1]] == [s.step_id for s in steps]
+    assert log_lines[-1]["step_id"] == "terminal"
+    assert log_lines[-1]["outcome_type"] == "success"
+    assert all(line["mode"] == "replay" for line in log_lines)
+    # One screenshot per step, plus the terminal one.
+    assert len(list((writer.run_dir / "screenshots").glob("*.png"))) == len(steps) + 1
+
+
+def test_evidence_writer_captures_a_hard_failure_with_debuggable_state(driver, guardrail, fixture_server, tmp_path):
+    # The evidence bundle's whole point per the design: prove a run that hits a real error is
+    # detected and reported, not silently swallowed. Same locator-never-resolves failure as
+    # test_hard_failure_when_a_step_locator_never_resolves above, but here asserting on what
+    # actually landed on disk rather than just the returned ReplayResult.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [step("s1", "click", [locator(value='role=button[name="Does Not Exist"]')], None, "Click nonexistent button")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=heading[name="First Fidelity Member Services - Internal Portal"]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+    writer = EvidenceWriter(run_id="test_replay_hard_failure", mode="replay", root=tmp_path)
+
+    result = ReplayEngine(driver, guardrail, evidence_writer=writer).run(art)
+
+    assert result.status == "hard_failure"
+    log_lines = [json.loads(line) for line in (writer.run_dir / "log.jsonl").read_text().splitlines()]
+    assert len(log_lines) == 1  # only the failed step - the run never reached a terminal line
+    failure_line = log_lines[0]
+    assert failure_line["step_id"] == "s1"
+    assert failure_line["outcome_type"] == "hard_failure"
+    assert failure_line["expected_state"] == "Click nonexistent button"
+    assert failure_line["observed_state"]  # populated, not empty - enough to debug without re-running
+    assert failure_line["evidence_ref"] is not None
+    assert (writer.run_dir / failure_line["evidence_ref"]).exists()  # the screenshot it points to is real
+
+
+def test_evidence_writer_registers_typed_values_as_secrets_before_dispatch(driver, guardrail, fixture_server, tmp_path):
+    # Extends the credential-leak defense (see utils/evidence.py's module docstring) to replay: a
+    # step's rendered input_value is registered for scrubbing before the step is dispatched,
+    # exactly as discovery already does for its own typed/selected values - not because today's
+    # replay log lines carry enough raw page text to leak it yet (_log_step never writes a
+    # literal input_value or raw DOM text, unlike discovery's observed_state), but so the
+    # discipline holds automatically if that ever changes, rather than depending on someone
+    # remembering to re-add it later.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=heading[name="First Fidelity Member Services - Internal Portal"]'), extract=None)
+    art = artifact(target, LOGIN_STEPS, checkpoint)
+    writer = EvidenceWriter(run_id="test_replay_secret_registration", mode="replay", root=tmp_path)
+
+    ReplayEngine(driver, guardrail, evidence_writer=writer).run(art)
+
+    assert "jdoe" in writer._secret_values
+    assert "secret" in writer._secret_values
