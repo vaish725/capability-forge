@@ -19,6 +19,27 @@ Two closely related but distinct questions, answered by the two functions here:
    action_type has no locator at all (navigate) is always success once it's executed without
    raising - there was nothing to fall back from.
 
+   This "recoverable" is deliberately narrower than the word's other two uses in this codebase, and
+   the three should not be assumed to mean the same event just because they share a label:
+     - The PRD's own prose definition (Section 7.1) is broader: "a known transient condition was
+       detected and handled automatically (e.g., dismissed a known interstitial, retried a slow
+       load)". That describes an anticipated *environmental* condition.
+     - Discovery's per-attempt evidence log (agent_loop.py) uses "recoverable" for a third,
+       different mechanism again: a dispatched action that wasn't recorded as a step at all (blocked
+       by policy, or a locator that didn't resolve), after which the LLM was simply asked to try
+       again. That is possible because discovery has an LLM in the loop to decide what "try again"
+       means; replay has no such thing.
+   Replay's classifier can only ever see one mechanism - locator-tier fallback - because it is the
+   only recovery path a driver with no LLM behind it has. Collapsing it onto the same word as the
+   other two would suggest replay can detect interstitials or retry transient failures the way
+   discovery does; it cannot. A future reliability scorer or escalation threshold reading
+   ReplayResult should treat "recoverable" as exactly and only "resolved via a non-primary locator
+   tier" - see ReplayResult.steps in engine.py for the per-step detail (which tier, on which step)
+   that a coarse run-level `recoverable_then_success` status alone would otherwise erase (one step
+   falling back once and every step falling back are very different signals about whether an
+   artifact's primary locators are still trustworthy, and only the per-step list can tell them
+   apart).
+
 2. classify_replay_status: given every step's outcome and what the artifact itself expected
    (CapabilityArtifact.expected_outcome_type - added specifically because a business_outcome
    checkpoint resolves exactly the same way a success one does, so there is no way to tell them
