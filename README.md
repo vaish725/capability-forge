@@ -9,9 +9,12 @@ a human, and resumes once they're done.
 Guardrails (allowlist, risk classification, redaction) apply to every action in both discovery and
 replay.
 
+See `REPORT.md` for the architecture, schema rationale, and safety write-up.
+
 ## Status
 
-In progress. Built and tested so far: the capability artifact schema, the guardrail policy
+Feature-complete against the assignment's core requirements plus both Tier 1 stretch goals. Built
+and tested: the capability artifact schema, the guardrail policy
 (allowlist, risk classification, redaction), the Playwright surface driver, the discovery loop,
 per-run evidence capture (step-by-step log, screenshots, redacted transcript, written to
 `evidence/<run_id>/`), the artifact recorder (turns a discovery run into a versioned, parameterized
@@ -34,7 +37,8 @@ design are also built: multi-run stability (`replay/reliability.py` - replays an
 against N independent fresh pages and writes a real `ReliabilityInfo` back onto it) and an
 agent-facing capability API (`api/main.py` - `GET /capabilities` lists every recorded artifact with
 its typed input/output contract and reliability data, `POST /capabilities/{id}/invoke` runs a real
-replay and returns the result). The only remaining piece is `REPORT.md`.
+replay and returns the result). Not attempted: the two Tier 2 stretch-stretch goals (confidence/
+approval gating, cross-tenant canonicalization) - see `REPORT.md`'s Cuts section for why.
 
 ## Setup
 
