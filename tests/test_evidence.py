@@ -142,3 +142,68 @@ def test_save_transcript_handles_text_blocks_and_plain_string_content(tmp_path):
     saved = json.loads((writer.run_dir / "transcript.json").read_text())
     assert saved[0]["content"] == "plain string observation"
     assert saved[1]["content"][0] == {"type": "text", "text": "I'll click login."}
+
+
+# --- register_secret: scrubbing a typed value out of every subsequent write ----------------------
+# Found live against ParaBank, not anticipated up front: a typed password resurfaced, unprompted,
+# in a later raw accessibility-tree observation - Playwright exposes an <input>'s current value as
+# part of its own description, even for type="password", which stripping the tool_use "value"
+# field (the fix above) does nothing to prevent, since the leak isn't in the tool call at all.
+
+
+def test_registered_secret_is_scrubbed_from_a_later_plain_string_observation(tmp_path):
+    writer = make_writer(tmp_path, sensitive_fields=frozenset())
+    writer.register_secret("hunter2")
+    # Mirrors the real leak shape: the secret was typed several turns ago, then resurfaces
+    # unprompted inside a later raw page observation with no field name to redact by.
+    messages = [
+        {"role": "user", "content": "Current page:\n...\n- textbox: hunter2\n- button \"Log In\""},
+    ]
+    writer.save_transcript(messages)
+    saved_text = (writer.run_dir / "transcript.json").read_text()
+    assert "hunter2" not in saved_text
+    assert "[REDACTED_INPUT]" in saved_text
+
+
+def test_registered_secret_is_scrubbed_from_log_step_free_text_fields(tmp_path):
+    writer = make_writer(tmp_path, sensitive_fields=frozenset())
+    writer.register_secret("hunter2")
+    writer.log_step(
+        step_id="step_1",
+        action_attempted="type(role=textbox,name=)",
+        locator_tier_used="role",
+        expected_state="type hunter2 into the password field",
+        observed_state="type succeeded.",
+        outcome_type="success",
+        duration_ms=1,
+    )
+    saved_text = (writer.run_dir / "log.jsonl").read_text()
+    assert "hunter2" not in saved_text
+    assert "[REDACTED_INPUT]" in saved_text
+
+
+def test_unregistered_values_are_left_alone(tmp_path):
+    writer = make_writer(tmp_path, sensitive_fields=frozenset())
+    # Nothing registered - scrubbing must be a no-op, not an accidental blanket redaction.
+    messages = [{"role": "user", "content": "Current page:\n- textbox: someone_else's_value"}]
+    writer.save_transcript(messages)
+    saved_text = (writer.run_dir / "transcript.json").read_text()
+    assert "someone_else's_value" in saved_text
+
+
+def test_register_secret_ignores_empty_values(tmp_path):
+    writer = make_writer(tmp_path, sensitive_fields=frozenset())
+    writer.register_secret("")
+    assert writer._secret_values == []
+
+
+def test_register_secret_scrubs_longest_match_first(tmp_path):
+    # "16" is a substring of "16896" - the longer registered secret must win so "16896" doesn't
+    # get partially replaced into "[REDACTED_INPUT]896", leaking the trailing digits.
+    writer = make_writer(tmp_path, sensitive_fields=frozenset())
+    writer.register_secret("16")
+    writer.register_secret("16896")
+    messages = [{"role": "user", "content": "account 16896 balance"}]
+    writer.save_transcript(messages)
+    saved = json.loads((writer.run_dir / "transcript.json").read_text())
+    assert saved[0]["content"] == "account [REDACTED_INPUT] balance"
