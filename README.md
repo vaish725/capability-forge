@@ -14,12 +14,14 @@ replay.
 In progress. Built and tested so far: the capability artifact schema, the guardrail policy
 (allowlist, risk classification, redaction), the Playwright surface driver, the discovery loop,
 per-run evidence capture (step-by-step log, screenshots, redacted transcript, written to
-`evidence/<run_id>/`), and the artifact recorder (turns a discovery run into a versioned,
-parameterized `CapabilityArtifact`). The discovery loop has been run live against both the bundled
-fixture and ParaBank's public demo banking site; a real recorded example is at
-`artifacts/parabank_check_account_balance.json`. Not yet built: the replay engine and
-human-in-the-loop escalation. The demo path below is real and runnable today for discovery mode; a
-replay command will be added here once that engine exists.
+`evidence/<run_id>/`), the artifact recorder (turns a discovery run into a versioned, parameterized
+`CapabilityArtifact`), and the replay engine (executes a saved artifact deterministically, no LLM
+involved, and classifies the outcome as success, business_outcome, recoverable_then_success, or
+hard_failure). The discovery loop has been run live against both the bundled fixture and
+ParaBank's public demo banking site; a real recorded example is at
+`artifacts/parabank_check_account_balance.json`. Not yet built: human-in-the-loop escalation and a
+replay CLI entry point. The demo path below is real and runnable today for discovery mode; a replay
+command will be added here once that CLI exists.
 
 ## Setup
 
