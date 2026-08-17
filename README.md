@@ -28,8 +28,9 @@ banking site; a real recorded example is at `artifacts/parabank_check_account_ba
 evidence bundle showing escalation firing end to end (a run that gets stuck, pauses, a human
 resumes it, and it completes the goal) is at `evidence/discovery_1786949371/` - see
 `scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about that
-run. Not yet built: a replay CLI entry point. The demo path below is real and runnable today for
-discovery mode; a replay command will be added here once that CLI exists.
+run. Both discovery and replay have a real CLI entry point now (`python -m capability_forge.discover`
+/ `python -m capability_forge.replay`, see the demo path below) - the only remaining piece is
+`REPORT.md`.
 
 ## Setup
 
@@ -37,7 +38,7 @@ discovery mode; a replay command will be added here once that CLI exists.
 - `pip install -r requirements.txt`
 - `playwright install chromium`
 - Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` (required for discovery mode only -
-  replay mode is designed to run fully offline, once it exists)
+  replay mode runs fully offline, no key needed)
 
 ## Demo path
 
@@ -48,7 +49,7 @@ fixture is served locally rather than opened directly. In one terminal:
 python -m http.server 8000 --directory fixtures
 ```
 
-In another:
+In another, to run discovery:
 
 ```
 python -m capability_forge.discover --goal "Look up the balance for member 12345" --target "http://127.0.0.1:8000/hostile_legacy_page.html"
@@ -57,11 +58,27 @@ python -m capability_forge.discover --goal "Look up the balance for member 12345
 Prints the stop reason, every step the agent took (with its risk classification), and the
 verified checkpoint once the run completes. `--headless` runs without a visible browser window;
 omit it to watch the run happen. `--max-steps` and `--timeout-seconds` override the loop's
-defaults (25 steps, 180 seconds) if needed. No live network dependency other than the Anthropic
-API call itself.
+defaults (25 steps, 180 seconds) if needed. `--no-escalation` disables the human-in-the-loop pause
+(on by default) for a scripted/CI context with no operator available to answer a prompt. No live
+network dependency other than the Anthropic API call itself.
 
-A replay command (`python -m capability_forge.replay ...`) will be added here once the replay
-engine is implemented.
+Or to replay a saved artifact against the same fixture, fully offline (no API key needed) - this
+one's `target.base_url` points at the local fixture server started above, so it's the same
+"Look up the balance" capability as the discovery command, just replayed deterministically instead
+of re-discovered:
+
+```
+python -m capability_forge.replay --artifact artifacts/fixture_check_account_balance.json --params '{"member_id": "12345"}'
+```
+
+Prints the run's status (`success`, `business_outcome`, `recoverable_then_success`, or
+`hard_failure`), any extracted outputs, and a per-step outcome breakdown. `--confirm-risky`
+authorizes any risky_irreversible step in the artifact to run without a separate confirmation
+prompt; `--no-escalation` and `--no-evidence` behave the same way they do for discovery. Exits
+non-zero on `hard_failure`, so it's usable as a scripted health check. `artifacts/parabank_check_account_balance.json`
+is a second real example recorded against ParaBank's live demo site instead of the bundled
+fixture - replaying it needs live network access to parabank.parasoft.com, so it isn't part of this
+fully-offline demo path.
 
 ## Folder structure
 

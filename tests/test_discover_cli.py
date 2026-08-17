@@ -33,12 +33,19 @@ def test_parses_optional_overrides():
     args = parser.parse_args(
         [
             "--goal", "g", "--target", "t",
-            "--headless", "--max-steps", "5", "--timeout-seconds", "30",
+            "--headless", "--max-steps", "5", "--timeout-seconds", "30", "--no-escalation",
         ]
     )
     assert args.headless is True
     assert args.max_steps == 5
     assert args.timeout_seconds == 30.0
+    assert args.no_escalation is True
+
+
+def test_escalation_defaults_to_enabled():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--goal", "g", "--target", "t"])
+    assert args.no_escalation is False
 
 
 def test_main_exits_cleanly_without_an_api_key(monkeypatch, capsys):

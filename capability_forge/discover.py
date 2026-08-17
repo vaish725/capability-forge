@@ -6,6 +6,14 @@ Wires together a launched Playwright browser, the guardrail policy loaded from
 config/allowlist.yaml, and AgentLoop into a single runnable command - this is the actual code
 behind the demo path documented in README.md. Requires ANTHROPIC_API_KEY (discovery mode is the
 one part of this project that isn't offline-runnable, unlike replay - see README for why).
+
+Escalation is on by default here too (matching replay/__main__.py), using the real
+cli_operator_console: if the dead-end guard trips, a human at the terminal is asked before the run
+just ends. Without this, the top-level pitch this whole project makes ("when the system can't
+safely proceed, it pauses and hands off to a human") would only ever be true inside a test, never
+for a real invocation of the actual CLI - found and fixed while building replay's own CLI
+alongside this one, not something this file shipped with originally. --no-escalation opts out for
+a scripted/CI context with no human available to answer a prompt.
 """
 
 import argparse
@@ -17,6 +25,7 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 from capability_forge.discovery.agent_loop import AgentLoop
+from capability_forge.escalation.manager import EscalationManager
 from capability_forge.guardrails.policy import Guardrail
 from capability_forge.surfaces.playwright_driver import PlaywrightDriver
 from capability_forge.utils.evidence import EvidenceWriter, new_run_id
@@ -33,6 +42,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-steps", type=int, default=None, help="Override the loop's default max_steps.")
     parser.add_argument("--timeout-seconds", type=float, default=None, help="Override the loop's default timeout.")
+    parser.add_argument(
+        "--no-escalation",
+        action="store_true",
+        help="Disable human-in-the-loop escalation. A dead-end guard trip ends the run immediately instead of pausing for an operator.",
+    )
     return parser
 
 
@@ -75,12 +89,13 @@ def main(argv: list[str] | None = None) -> int:
 
     run_id = new_run_id("discovery")
     evidence_writer = EvidenceWriter(run_id=run_id, mode="discovery", sensitive_fields=set(guardrail.policy.sensitive_fields))
+    escalation_manager = None if args.no_escalation else EscalationManager(run_id=run_id, evidence_writer=evidence_writer)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
         page = browser.new_page()
         driver = PlaywrightDriver(page)
-        agent = AgentLoop(driver, guardrail, evidence_writer=evidence_writer, **loop_kwargs)
+        agent = AgentLoop(driver, guardrail, evidence_writer=evidence_writer, escalation_manager=escalation_manager, **loop_kwargs)
         try:
             result = agent.run(args.goal, args.target)
         except anthropic.AnthropicError as exc:
