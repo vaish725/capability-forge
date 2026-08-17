@@ -231,7 +231,15 @@ class ReplayEngine:
             action_attempted = f"navigate({destination})"
             observed_state = "navigated"
         elif resolved_tier is not None:
-            action_attempted = f"{step.action_type}({resolved_tier.strategy}={resolved_tier.value})"
+            # A role-tier value is already a full "role=..." selector string (self-describing);
+            # css and coordinate values are bare ("button.submit", "120,340") and need the
+            # strategy prefixed on to stay readable. Checking rather than assuming which is which
+            # avoids "role=role=..." showing up in a real log line the moment a role-tier value's
+            # own convention is what it already is - found by reading a real generated evidence
+            # bundle, not by inspecting this code in isolation.
+            prefix = f"{resolved_tier.strategy}="
+            value_str = resolved_tier.value if resolved_tier.value.startswith(prefix) else f"{prefix}{resolved_tier.value}"
+            action_attempted = f"{step.action_type}({value_str})"
             observed_state = f"resolved via {resolved_tier.strategy} tier"
         else:
             action_attempted = f"{step.action_type}()"

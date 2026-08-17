@@ -306,6 +306,32 @@ def test_evidence_writer_logs_one_line_per_step_plus_a_terminal_summary(driver, 
     assert all(line["mode"] == "replay" for line in log_lines)
     # One screenshot per step, plus the terminal one.
     assert len(list((writer.run_dir / "screenshots").glob("*.png"))) == len(steps) + 1
+    # A role-tier value is already a self-describing "role=..." selector string - action_attempted
+    # must not double it into "role=role=...". Found by reading a real generated evidence bundle.
+    assert "role=role=" not in log_lines[0]["action_attempted"]
+    assert log_lines[0]["action_attempted"].startswith("type(role=")
+
+
+def test_action_attempted_prefixes_a_css_tier_value_that_is_not_self_describing(driver, guardrail, fixture_server, tmp_path):
+    # Unlike role, a css-tier value is a bare selector ("#btnLogin", not "css=#btnLogin") - it
+    # still needs the strategy prefixed on to stay readable, unlike the role case above.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [
+        step(
+            "s3", "click",
+            [locator(value='role=button[name="Not The Real Name"]'), locator(strategy="css", value="#btnLogin")],
+            None, "Click login (first tier deliberately stale)",
+        ),
+    ]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=textbox[name="Member ID:"]'), extract=None)
+    steps = LOGIN_STEPS[:2] + steps
+    art = artifact(target, steps, checkpoint)
+    writer = EvidenceWriter(run_id="test_css_prefix", mode="replay", root=tmp_path)
+
+    ReplayEngine(driver, guardrail, evidence_writer=writer).run(art)
+
+    log_lines = [json.loads(line) for line in (writer.run_dir / "log.jsonl").read_text().splitlines()]
+    assert log_lines[-2]["action_attempted"] == "click(css=#btnLogin)"
 
 
 def test_evidence_writer_captures_a_hard_failure_with_debuggable_state(driver, guardrail, fixture_server, tmp_path):
