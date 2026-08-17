@@ -12,10 +12,12 @@ replay.
 ## Status
 
 In progress. Built and tested so far: the capability artifact schema, the guardrail policy
-(allowlist, risk classification, redaction), the Playwright surface driver, and the discovery loop
-itself. Not yet built: the replay engine, artifact recorder, and human-in-the-loop escalation. The
-demo path below is real and runnable today for discovery mode; a replay command will be added here
-once that engine exists.
+(allowlist, risk classification, redaction), the Playwright surface driver, the discovery loop, and
+per-run evidence capture (step-by-step log, screenshots, redacted transcript, written to
+`evidence/<run_id>/`). The discovery loop has been run live against both the bundled fixture and
+ParaBank's public demo banking site. Not yet built: the replay engine, artifact recorder, and
+human-in-the-loop escalation. The demo path below is real and runnable today for discovery mode; a
+replay command will be added here once that engine exists.
 
 ## Setup
 
