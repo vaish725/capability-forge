@@ -80,6 +80,25 @@ is a second real example recorded against ParaBank's live demo site instead of t
 fixture - replaying it needs live network access to parabank.parasoft.com, so it isn't part of this
 fully-offline demo path.
 
+To see the hard_failure path for real, replay the same artifact with `--params '{"member_id": "00000"}'`
+instead - `00000` is the fixture's own deterministic trigger for a simulated backend error
+(`SYS-500`), so the checkpoint never resolves and the run reports `hard_failure` with the failed
+step, expected/observed state, and a screenshot of the actual error.
+
+## Evidence
+
+Every claim above has a real, checked-in example backing it, not just a description:
+
+- **Discovery success** - `evidence/discovery_1786935840/` (log, screenshots, redacted transcript).
+- **Replay success** - `evidence/replay_1786951099/`, produced by the exact replay command above.
+- **Replay hard_failure** - `evidence/replay_1786951120/`, produced by the exact `member_id=00000`
+  command above - `screenshots/step_06.png` shows the actual SYS-500 error state at the point of
+  failure.
+- **Escalation firing end to end** (a run that gets stuck, pauses, a human resumes it, and it goes
+  on to complete the goal) - `evidence/discovery_1786949371/`, including a `handoffs.jsonl`
+  showing the recorded decision. See `scripts/generate_escalation_demo_evidence.py` for exactly
+  what's real versus scripted about that one.
+
 ## Folder structure
 
 - `capability_forge/discovery/` - the observe-decide-act loop that learns a task and records it.
