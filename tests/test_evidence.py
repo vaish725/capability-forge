@@ -184,6 +184,37 @@ def test_registered_secret_is_scrubbed_from_log_step_free_text_fields(tmp_path):
     assert "[REDACTED_INPUT]" in saved_text
 
 
+def test_registered_secret_is_scrubbed_from_a_handoff_record(tmp_path):
+    # log_handoff() goes through the exact same two-layer pipeline (_scrub_secrets then redact())
+    # as log_step() and save_transcript() - checked explicitly rather than assumed, since a
+    # handoff is arguably the highest-risk write of the three: it's the one record a human
+    # operator's own free text (HandoffRecord.notes, what they say they did) lands in directly,
+    # and register_secret() only knows about values the automated system itself typed earlier in
+    # the run - not anything new the operator might type. Covers both a value the system already
+    # knew resurfacing in the trigger's own description (the same shape as the original leak) and
+    # the operator echoing that same already-known value back in their notes.
+    from capability_forge.escalation.manager import HandoffRecord
+
+    writer = make_writer(tmp_path, sensitive_fields=frozenset())
+    writer.register_secret("hunter2")
+    record = HandoffRecord(
+        run_id="test_run",
+        reason="hard_failure",
+        step_id="s1",
+        description="Step s1 failed while the password field still held hunter2",
+        decision="resume",
+        notes="re-typed hunter2 into the password field and it worked",
+        taken_at="2026-01-01T00:00:00Z",
+        released_at="2026-01-01T00:01:00Z",
+    )
+
+    writer.log_handoff(record)
+
+    saved_text = (writer.run_dir / "handoffs.jsonl").read_text()
+    assert "hunter2" not in saved_text
+    assert saved_text.count("[REDACTED_INPUT]") == 2  # once in description, once in notes
+
+
 def test_unregistered_values_are_left_alone(tmp_path):
     writer = make_writer(tmp_path, sensitive_fields=frozenset())
     # Nothing registered - scrubbing must be a no-op, not an accidental blanket redaction.

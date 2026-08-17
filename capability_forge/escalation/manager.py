@@ -45,6 +45,23 @@ of scope... mock the operator UI if needed, but make the handoff mechanism and c
 model real") at the lowest cost to build and the highest testability: a fake console is just a
 function returning a canned OperatorDecision, so every state transition here is testable without
 a terminal, a browser, or a human in the loop at all.
+
+Known limitation, named plainly rather than left implicit (the same discipline redact.py and
+evidence.py already apply to their own gaps): HandoffRecord.notes is free text the operator types
+describing what they did, and it goes through the exact same redaction/secret-scrub pipeline as
+every other evidence write (EvidenceWriter.log_handoff) - but that pipeline can only scrub a value
+it already knows about in advance, via register_secret(). An operator intervening live in a
+paused session is arguably the single highest-risk moment for a leak of this project's own most
+sensitive kind (they might re-type a corrected password, re-enter a login, and then describe doing
+so in their own words) - and if that value was never previously typed by the automated system
+itself in this same run, register_secret() never learned it, so nothing here can recognize it in
+notes. This is a structurally different gap from the one register_secret() was built to close (a
+value the system already knew resurfacing somewhere unexpected) - there is no way to scrub a
+secret's literal text without already knowing that literal text. Mitigated the only way available
+short of banning free text entirely: cli_operator_console's own prompt tells the operator directly
+not to put secrets in notes. This is a real, accepted limitation, not a solved one - worth
+revisiting if this project ever needs a console operated by someone other than the same person
+running the demo.
 """
 
 import time
@@ -125,7 +142,13 @@ def cli_operator_console(trigger: EscalationTrigger) -> OperatorDecision:
     while True:
         raw = input("Type 'resume' to hand control back to the agent, or 'abort' to end the run: ").strip().lower()
         if raw in ("resume", "abort"):
-            notes = input("Optional note about what you did (blank to skip): ").strip()
+            # See the module docstring's note on HandoffRecord.notes: this free text is written to
+            # handoffs.jsonl through the same redaction/secret-scrub pipeline as everything else,
+            # but that pipeline can only catch a value the system already knew about in advance
+            # (via register_secret()) - it has no way to recognize a brand-new secret the operator
+            # types here for the first time. Warned explicitly rather than silently trusting the
+            # redaction layer to cover something it structurally cannot.
+            notes = input("Optional note about what you did (blank to skip - do not type passwords or other secrets here, they are not redacted): ").strip()
             return OperatorDecision(decision=raw, notes=notes)  # type: ignore[arg-type]
         print("Please type exactly 'resume' or 'abort'.")
 

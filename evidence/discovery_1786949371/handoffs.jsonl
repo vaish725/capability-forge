@@ -1,0 +1,1 @@
+{"run_id": "discovery_1786949371", "reason": "dead_end_detected", "step_id": null, "description": "The page state hasn't changed after 3 mutating actions - the agent may be stuck.", "decision": "resume", "notes": "Scripted operator: dismissed the repeated validation error and let the agent continue.", "taken_at": "2026-08-17T06:49:32Z", "released_at": "2026-08-17T06:49:32Z"}

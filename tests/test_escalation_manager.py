@@ -157,3 +157,21 @@ def test_cli_operator_console_reprompts_on_an_invalid_decision(monkeypatch):
     decision = cli_operator_console(trigger())
 
     assert decision.decision == "resume"
+
+
+def test_cli_operator_console_warns_against_secrets_in_the_notes_prompt(monkeypatch):
+    # register_secret()/the redaction pipeline can only scrub a value it already knew about in
+    # advance - it can't recognize a brand-new secret the operator types fresh into notes. The
+    # console's own prompt is the only mitigation available for that gap (see the module
+    # docstring's "known limitation" note), so it must actually say so, not just intend to.
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return {0: "resume", 1: "did nothing sensitive"}[len(prompts) - 1]
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    cli_operator_console(trigger())
+
+    notes_prompt = prompts[1]
+    assert "secret" in notes_prompt.lower() or "password" in notes_prompt.lower()
