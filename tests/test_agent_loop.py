@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from capability_forge.discovery.agent_loop import AgentLoop, trim_accessibility_tree
+from capability_forge.discovery.agent_loop import AgentLoop, build_system_prompt, trim_accessibility_tree
 from capability_forge.guardrails.policy import AllowlistPolicy, Guardrail
 from capability_forge.surfaces.playwright_driver import PlaywrightDriver
 from capability_forge.utils.evidence import EvidenceWriter
@@ -307,19 +307,65 @@ def test_timeout_exceeded_before_any_claude_call(driver, guardrail, fixture_serv
     assert len(client.calls) == 0
 
 
-def test_dead_end_detected_when_state_never_changes(driver, guardrail, fixture_server):
+def test_dead_end_detected_when_a_mutating_action_never_changes_the_page(driver, guardrail, fixture_server):
+    # Clicking Login with both fields empty produces a validation alert; clicking it again while
+    # still empty leaves that same alert in place - a genuinely stuck pattern (repeatedly trying
+    # to submit and failing) is what the guard exists to catch. repeated_state_limit=3 needs the
+    # alert-present state observed 3 times, which takes 3 clicks (the first click is what produces
+    # that state in the first place, starting from the different, alert-free initial state).
     target = f"{fixture_server}/hostile_legacy_page.html"
-    # repeated_state_limit=3 needs the state observed 3 times; the 3rd observe happens before a
-    # 3rd Claude call is ever made, so only 2 scripted responses are needed.
     responses = [
-        ScriptedMessage([tool_use("extract", {"role": "heading", "name": "First Fidelity Member Services - Internal Portal", "reasoning": "check"}, "t1")]),
-        ScriptedMessage([tool_use("extract", {"role": "heading", "name": "First Fidelity Member Services - Internal Portal", "reasoning": "check"}, "t2")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t1")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t2")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t3")]),
     ]
     agent, client = loop(driver, guardrail, responses, repeated_state_limit=3, max_steps=25)
     result = agent.run("An open-ended goal", target)
 
     assert result.stop_reason == "dead_end_detected"
-    assert len(client.calls) == 2
+    assert len(client.calls) == 3
+
+
+def test_repeated_extract_and_failed_done_do_not_count_toward_dead_end(driver, guardrail, fixture_server):
+    # Found live against ParaBank: a run that correctly called extract twice, then attempted done
+    # with a checkpoint that failed to verify - all on one page whose state never changed, because
+    # none of those three calls were ever expected to mutate anything - tripped the old
+    # state-repeat counter and dead-ended, even though it was making genuine progress. None of
+    # extract/extract/failed-done should count toward the limit; only the eventual successful done
+    # (still on the same unchanged page) should end the run, and it should end in success.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    responses = [
+        ScriptedMessage([tool_use("extract", {"role": "heading", "name": "First Fidelity Member Services - Internal Portal", "reasoning": "check"}, "t1")]),
+        ScriptedMessage([tool_use("extract", {"role": "heading", "name": "First Fidelity Member Services - Internal Portal", "reasoning": "check"}, "t2")]),
+        ScriptedMessage(
+            [
+                tool_use(
+                    "done",
+                    {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "does not exist", "summary": "wrong"},
+                    "t3",
+                )
+            ]
+        ),
+        ScriptedMessage(
+            [
+                tool_use(
+                    "done",
+                    {
+                        "outcome_type": "success",
+                        "checkpoint_role": "heading",
+                        "checkpoint_name": "First Fidelity Member Services - Internal Portal",
+                        "summary": "Confirmed the page loaded.",
+                    },
+                    "t4",
+                )
+            ]
+        ),
+    ]
+    agent, client = loop(driver, guardrail, responses, repeated_state_limit=3, max_steps=25)
+    result = agent.run("An open-ended goal", target)
+
+    assert result.stop_reason == "goal_complete"
+    assert len(client.calls) == 4
 
 
 # --- text-only response nudges toward a tool call, doesn't crash --------------------------------
@@ -472,3 +518,26 @@ def test_trim_accessibility_tree_truncates_long_text():
 def test_trim_accessibility_tree_boundary_exact_length():
     exact = "x" * 100
     assert trim_accessibility_tree(exact, max_chars=100) == exact
+
+
+# --- build_system_prompt: regression-locks the extract-before-done guidance ----------------------
+
+
+def test_system_prompt_embeds_the_goal():
+    prompt = build_system_prompt("Find the balance for member 12345")
+    assert "Find the balance for member 12345" in prompt
+
+
+def test_system_prompt_requires_extract_before_reporting_a_found_value():
+    # Found live against ParaBank: the model read a balance straight off the accessibility tree
+    # and stated it in done's summary without ever calling extract, so the recorded run had no
+    # named output despite the run being reported as successfully finding the value. This
+    # regression-locks the guidance added to close that gap.
+    prompt = build_system_prompt("Find the balance")
+    assert "must call extract" in prompt
+    assert "not the same as extracting it" in prompt
+
+
+def test_system_prompt_warns_about_duplicate_accessible_names_needing_nth():
+    prompt = build_system_prompt("Find the balance")
+    assert "more than one element actually shares that exact text" in prompt

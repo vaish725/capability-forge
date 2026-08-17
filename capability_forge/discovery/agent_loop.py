@@ -55,10 +55,20 @@ DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_STEPS = 25
 DEFAULT_TIMEOUT_SECONDS = 180
 # How many times the exact same (url, accessibility tree) state must repeat before the loop
-# concludes it's stuck and forces a stop, rather than letting Claude retry indefinitely.
+# concludes it's stuck and forces a stop, rather than letting Claude retry indefinitely. Only
+# counted after a mutating action (see _MUTATING_ACTIONS below) - see the comment in run().
 DEFAULT_REPEATED_STATE_LIMIT = 3
 DEFAULT_MAX_TREE_CHARS = 4000
 DEFAULT_MAX_TOKENS = 1024
+
+# Action types expected to change the page. extract, wait, and a done/give_up attempt are
+# deliberately excluded: extract and wait never mutate anything by design, and a done call that
+# fails checkpoint verification is expected to leave the page exactly as it was while the model
+# reconsiders - none of those repeating the same state is a sign of being stuck, only a mutating
+# action that still doesn't move the page forward is. Found live against ParaBank: a run that
+# correctly called extract twice and then a (rejected) done, all on one unchanged page, tripped
+# the old state-repeat counter immediately even though it was making genuine progress.
+_MUTATING_ACTIONS = frozenset({"click", "type", "select", "navigate"})
 
 StopReason = Literal[
     "goal_complete",
@@ -231,6 +241,8 @@ Guidance:
 - If you encounter an unexpected notice, dialog, or interstitial blocking your path, look for a way to dismiss or continue past it (e.g. a "Continue", "OK", or "Dismiss" button) before giving up. This is often a normal, recoverable part of the flow, not a failure.
 - If the goal cannot be completed because of the specific input you were given (for example, a record genuinely does not exist, or a requested amount exceeds what is available), that is a valid, expected result, not a failure. Call done with outcome_type="business_outcome" and a short business_outcome_reason. Do not retry a business outcome as if it were an error.
 - Only call done with outcome_type="success" once you can point to a specific element (role and name) that proves the goal was actually achieved.
+- If the goal asks you to find, report, check, or return a specific value (a balance, an account number, a status, or similar), you must call extract on that exact value before calling done - do not just state the value in your own reasoning or in done's summary. Mentioning a number in your response text is not the same as extracting it, and the run is not complete until you have.
+- A value can appear more than once with the identical accessible name (e.g. a "Balance" and an "Available Amount" column showing the same figure) - if extract or done reports "could not find" for a role+name that looks like it should be unique, check whether more than one element actually shares that exact text and use nth to pick the right one, the same way you would for a click or type.
 - If you are genuinely stuck - an unrecoverable error, or you've tried multiple reasonable approaches with no progress - call give_up with a clear reason rather than repeating the same action.
 - Use extract to read a value off the page when you need to check something before deciding what to do next.
 """
@@ -329,15 +341,21 @@ class AgentLoop:
                 **kwargs,
             )
 
+        last_action_name: str | None = None  # None until the first tool call is dispatched
+
         for _ in range(self.max_steps):
             if time.monotonic() - start_time > self.timeout_seconds:
                 return finish(stop_reason="timeout_exceeded")
 
             snapshot = self.driver.observe()
-            state_key = f"{snapshot.url}::{snapshot.accessibility_tree}"
-            state_counts[state_key] = state_counts.get(state_key, 0) + 1
-            if state_counts[state_key] >= self.repeated_state_limit:
-                return finish(stop_reason="dead_end_detected")
+            # Only a mutating action that still didn't move the page forward counts toward the
+            # dead-end guard - see _MUTATING_ACTIONS. last_action_name is None on the very first
+            # observation (nothing attempted yet), which always counts.
+            if last_action_name is None or last_action_name in _MUTATING_ACTIONS:
+                state_key = f"{snapshot.url}::{snapshot.accessibility_tree}"
+                state_counts[state_key] = state_counts.get(state_key, 0) + 1
+                if state_counts[state_key] >= self.repeated_state_limit:
+                    return finish(stop_reason="dead_end_detected")
 
             tree = trim_accessibility_tree(snapshot.accessibility_tree, self.max_tree_chars)
             observation = f"Current page:\nURL: {snapshot.url}\nTitle: {snapshot.title}\n\nAccessibility tree:\n{tree}"
@@ -358,9 +376,21 @@ class AgentLoop:
                 continue
 
             block = tool_use_blocks[0]  # only the first tool call per turn is acted on
+
+            # Register any typed/selected literal now, before it has a chance to resurface in a
+            # later page observation - a real leak path found live against ParaBank: a typed
+            # password reappeared, unprompted, inside a raw accessibility-tree snapshot several
+            # turns later (Playwright exposes an input's current value as part of its own
+            # description, even for type="password"). See EvidenceWriter's module docstring.
+            if self.evidence_writer is not None and block.name in ("type", "select"):
+                typed_value = block.input.get("value")
+                if typed_value:
+                    self.evidence_writer.register_secret(typed_value)
+
             step_start = time.monotonic()
             result = self._dispatch_tool_call(block.name, block.input, target_url, len(steps) + 1)
             duration_ms = int((time.monotonic() - step_start) * 1000)
+            last_action_name = block.name
 
             if result.stop_reason is not None:
                 return finish(
