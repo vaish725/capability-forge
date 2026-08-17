@@ -1,0 +1,113 @@
+{
+  "artifact_id": "fixture_check_account_balance",
+  "schema_version": "1.0",
+  "created_at": "2026-08-17T07:01:50.498303Z",
+  "target": {
+    "base_url": "http://127.0.0.1:8000/hostile_legacy_page.html",
+    "app_name": "legacy_bank",
+    "tenant_overrides": null
+  },
+  "goal_description": "Look up the balance for a given member id",
+  "inputs": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "required": true,
+      "description": "The member id to look up."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "balance",
+      "type": "string",
+      "description": "The member's account balance as shown on the page."
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "s1",
+      "action_type": "type",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "role=textbox[name=\"User Name:\"]",
+          "confidence": 0.9
+        }
+      ],
+      "input_value": "jdoe",
+      "risk": "safe_reversible",
+      "description": "Enter username"
+    },
+    {
+      "step_id": "s2",
+      "action_type": "type",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "role=textbox[name=\"Password:\"]",
+          "confidence": 0.9
+        }
+      ],
+      "input_value": "demo-password",
+      "risk": "safe_reversible",
+      "description": "Enter password"
+    },
+    {
+      "step_id": "s3",
+      "action_type": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "role=button[name=\"Login\"]",
+          "confidence": 0.9
+        }
+      ],
+      "input_value": null,
+      "risk": "safe_reversible",
+      "description": "Submit login"
+    },
+    {
+      "step_id": "s4",
+      "action_type": "type",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "role=textbox[name=\"Member ID:\"]",
+          "confidence": 0.9
+        }
+      ],
+      "input_value": "{{member_id}}",
+      "risk": "safe_reversible",
+      "description": "Enter member id"
+    },
+    {
+      "step_id": "s5",
+      "action_type": "click",
+      "locators": [
+        {
+          "strategy": "role",
+          "value": "role=button[name=\"Search\"]",
+          "confidence": 0.9
+        }
+      ],
+      "input_value": null,
+      "risk": "safe_reversible",
+      "description": "Search"
+    }
+  ],
+  "checkpoint": {
+    "description": "Balance shown",
+    "locator": {
+      "strategy": "role",
+      "value": "role=cell[name=\"$4500.00\"]",
+      "confidence": 0.9
+    },
+    "extract": {
+      "balance": "css=.balance-value"
+    }
+  },
+  "risk_summary": "safe",
+  "expected_outcome_type": "success",
+  "business_outcome_reason": null,
+  "reliability": null
+}
