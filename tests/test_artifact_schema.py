@@ -57,6 +57,7 @@ def make_artifact_dict(**overrides) -> dict:
             "extract": None,
         },
         "risk_summary": "safe",
+        "expected_outcome_type": "success",
     }
     base.update(overrides)
     return base
@@ -323,6 +324,33 @@ def test_risk_summary_safe_with_mixed_steps_one_risky_rejected():
             ],
             risk_summary="safe",
         )
+
+
+# --- cross-field: expected_outcome_type must agree with business_outcome_reason ----------------
+# Added when the replay engine needed to tell a success checkpoint apart from a business_outcome
+# one - the two resolve identically at replay time, so the artifact has to self-declare which.
+
+
+def test_success_outcome_type_accepted_without_a_reason():
+    artifact = build(expected_outcome_type="success")
+    assert artifact.expected_outcome_type == "success"
+    assert artifact.business_outcome_reason is None
+
+
+def test_business_outcome_type_requires_a_reason():
+    with pytest.raises(ValidationError, match="business_outcome_reason is required"):
+        build(expected_outcome_type="business_outcome", business_outcome_reason=None)
+
+
+def test_business_outcome_type_with_a_reason_accepted():
+    artifact = build(expected_outcome_type="business_outcome", business_outcome_reason="member_not_found")
+    assert artifact.expected_outcome_type == "business_outcome"
+    assert artifact.business_outcome_reason == "member_not_found"
+
+
+def test_success_outcome_type_rejects_a_reason():
+    with pytest.raises(ValidationError, match="must be unset"):
+        build(expected_outcome_type="success", business_outcome_reason="member_not_found")
 
 
 # --- cross-field: template params must reference declared inputs -------------------------------

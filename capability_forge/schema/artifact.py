@@ -20,6 +20,11 @@ be saved (or loaded) in a state that contradicts its own design rationale:
     every StepAction with action_type="navigate" is an explicit, additional hop and needs to say
     where it's going. `navigate` is also the one action type allowed to omit `locators` entirely -
     it targets a URL, not a page element, so there is nothing to find a locator for.
+  - `business_outcome_reason` must be set exactly when `expected_outcome_type` is
+    "business_outcome", and unset otherwise. Added once the replay engine needed to distinguish a
+    success checkpoint from a business_outcome checkpoint - the two resolve identically at replay
+    time (the element is present, the run reached its terminal state), so there is no mechanical
+    way to tell them apart without the artifact self-declaring which one it is.
 """
 
 import re
@@ -201,7 +206,24 @@ class CapabilityArtifact(BaseModel):
     steps: list[StepAction] = Field(min_length=1)
     checkpoint: Checkpoint
     risk_summary: Literal["safe", "contains_risky_steps"]
+    # What kind of terminal state this artifact's recorded flow reproduces when replayed
+    # end-to-end. Required, not defaulted to "success": a business_outcome checkpoint resolves
+    # exactly the same way a success checkpoint does (the element is present, the run reached its
+    # terminal state) - there is no way to tell them apart mechanically at replay time without the
+    # artifact self-declaring which one it is. business_outcome_reason is required precisely when
+    # this is "business_outcome" and must be absent otherwise, enforced below - mirrors the
+    # risk_summary/checkpoint.extract pattern already used elsewhere in this schema.
+    expected_outcome_type: Literal["success", "business_outcome"]
+    business_outcome_reason: str | None = None
     reliability: ReliabilityInfo | None = None  # populated by the multi-run stability check
+
+    @model_validator(mode="after")
+    def _business_outcome_reason_matches_expected_outcome_type(self) -> "CapabilityArtifact":
+        if self.expected_outcome_type == "business_outcome" and not self.business_outcome_reason:
+            raise ValueError("business_outcome_reason is required when expected_outcome_type is 'business_outcome'")
+        if self.expected_outcome_type == "success" and self.business_outcome_reason:
+            raise ValueError("business_outcome_reason must be unset when expected_outcome_type is 'success'")
+        return self
 
     @model_validator(mode="after")
     def _step_ids_are_unique(self) -> "CapabilityArtifact":

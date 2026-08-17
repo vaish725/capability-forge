@@ -58,8 +58,33 @@ def test_goal_complete_run_is_recordable():
 def test_business_outcome_run_is_recordable():
     # Just as legitimate and just as checkpoint-verified as a success run - see the module
     # docstring's first design decision.
-    artifact = record_artifact(make_run(stop_reason="business_outcome"), artifact_id="check_member", app_name="parabank")
+    run = make_run(stop_reason="business_outcome", business_outcome_reason="member_not_found")
+    artifact = record_artifact(run, artifact_id="check_member", app_name="parabank")
     assert artifact.artifact_id == "check_member"
+    assert artifact.expected_outcome_type == "business_outcome"
+    assert artifact.business_outcome_reason == "member_not_found"
+
+
+def test_goal_complete_run_gets_success_expected_outcome_type():
+    artifact = record_artifact(make_run(stop_reason="goal_complete"), artifact_id="a", app_name="app")
+    assert artifact.expected_outcome_type == "success"
+    assert artifact.business_outcome_reason is None
+
+
+def test_business_outcome_run_without_a_reason_fails_to_record():
+    # The recorder doesn't invent a placeholder reason - a business_outcome run whose reason was
+    # never actually captured is a real data-quality problem, and the schema's own validator
+    # (expected_outcome_type='business_outcome' requires business_outcome_reason) correctly
+    # refuses to produce an incomplete artifact rather than masking it.
+    run = make_run(stop_reason="business_outcome", business_outcome_reason=None)
+    with pytest.raises(ValidationError):
+        record_artifact(run, artifact_id="check_member", app_name="parabank")
+
+
+def test_business_outcome_reason_is_templated_like_other_free_text_fields():
+    run = make_run(stop_reason="business_outcome", business_outcome_reason="jdoe_not_found", steps=[step(step_id="s1", action_type="type", input_value="jdoe")])
+    artifact = record_artifact(run, artifact_id="a", app_name="app", param_map={"jdoe": "username"})
+    assert artifact.business_outcome_reason == "{{username}}_not_found"
 
 
 @pytest.mark.parametrize("stop_reason", ["give_up", "max_steps_exceeded", "timeout_exceeded", "dead_end_detected"])

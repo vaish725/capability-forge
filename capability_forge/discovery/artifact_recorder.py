@@ -125,6 +125,18 @@ def record_artifact(
 
     has_risky_step = any(step.risk == "risky_irreversible" for step in steps)
 
+    # stop_reason -> expected_outcome_type: "goal_complete" produced a success checkpoint,
+    # "business_outcome" produced a business_outcome one (the only two recordable stop reasons -
+    # see _RECORDABLE_STOP_REASONS above). business_outcome_reason is templated for the same
+    # reason goal_description and checkpoint.description are: it's free text the model wrote, and
+    # nothing rules out it having echoed a literal value that was just parameterized elsewhere.
+    expected_outcome_type = "success" if run.stop_reason == "goal_complete" else "business_outcome"
+    business_outcome_reason = (
+        _apply_param_map(run.business_outcome_reason, param_map)
+        if expected_outcome_type == "business_outcome" and run.business_outcome_reason
+        else None
+    )
+
     return CapabilityArtifact(
         artifact_id=artifact_id,
         schema_version=schema_version,
@@ -135,6 +147,8 @@ def record_artifact(
         steps=steps,
         checkpoint=checkpoint,
         risk_summary="contains_risky_steps" if has_risky_step else "safe",
+        expected_outcome_type=expected_outcome_type,
+        business_outcome_reason=business_outcome_reason,
     )
 
 
