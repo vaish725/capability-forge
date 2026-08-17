@@ -9,11 +9,13 @@ the right thing given a sequence of tool calls", not "does Claude make good deci
 latter needs a real API key and is exercised separately, not as an automated test.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from capability_forge.discovery.agent_loop import AgentLoop, build_system_prompt, trim_accessibility_tree
+from capability_forge.escalation.manager import EscalationManager, OperatorDecision
 from capability_forge.guardrails.policy import AllowlistPolicy, Guardrail
 from capability_forge.surfaces.playwright_driver import PlaywrightDriver
 from capability_forge.utils.evidence import EvidenceWriter
@@ -324,6 +326,55 @@ def test_dead_end_detected_when_a_mutating_action_never_changes_the_page(driver,
 
     assert result.stop_reason == "dead_end_detected"
     assert len(client.calls) == 3
+
+
+def test_dead_end_escalation_resumed_lets_the_run_continue_instead_of_stopping(driver, guardrail, fixture_server, tmp_path):
+    # Same stuck pattern as the plain dead-end test above, but with an EscalationManager attached:
+    # the guard still trips on the 3rd identical click, but instead of ending the run there, a
+    # human is asked first. A fake operator_console standing in for the human returns "resume"
+    # without needing to actually touch the browser (mirroring how the LLM client itself is
+    # already faked here) - the loop should then re-observe and keep going, consuming a 4th
+    # scripted response, rather than stopping at dead_end_detected.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    responses = [
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t1")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t2")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t3")]),
+        ScriptedMessage([tool_use("give_up", {"reason": "still stuck after the human looked at it"}, "t4")]),
+    ]
+    writer = EvidenceWriter(run_id="test_dead_end_resume", mode="discovery", root=tmp_path)
+    escalation = EscalationManager(
+        run_id="test_dead_end_resume",
+        operator_console=lambda trigger: OperatorDecision(decision="resume", notes="dismissed the alert manually"),
+        evidence_writer=writer,
+    )
+    agent, client = loop(driver, guardrail, responses, repeated_state_limit=3, max_steps=25, evidence_writer=writer, escalation_manager=escalation)
+    result = agent.run("An open-ended goal", target)
+
+    assert result.stop_reason == "give_up"  # not dead_end_detected - the escalation let it continue
+    assert len(client.calls) == 4
+    handoffs = [json.loads(line) for line in (writer.run_dir / "handoffs.jsonl").read_text().splitlines()]
+    assert len(handoffs) == 1
+    assert handoffs[0]["reason"] == "dead_end_detected"
+    assert handoffs[0]["decision"] == "resume"
+
+
+def test_dead_end_escalation_aborted_still_stops_the_run(driver, guardrail, fixture_server):
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    responses = [
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t1")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t2")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit"}, "t3")]),
+    ]
+    escalation = EscalationManager(
+        run_id="test_dead_end_abort",
+        operator_console=lambda trigger: OperatorDecision(decision="abort", notes="genuinely stuck"),
+    )
+    agent, client = loop(driver, guardrail, responses, repeated_state_limit=3, max_steps=25, escalation_manager=escalation)
+    result = agent.run("An open-ended goal", target)
+
+    assert result.stop_reason == "dead_end_detected"
+    assert len(client.calls) == 3  # no extra turn was spent - abort ends the run at the same point
 
 
 def test_repeated_extract_and_failed_done_do_not_count_toward_dead_end(driver, guardrail, fixture_server):

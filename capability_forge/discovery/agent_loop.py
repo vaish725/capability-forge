@@ -34,6 +34,7 @@ from typing import Any, Literal
 
 import anthropic
 
+from capability_forge.escalation.manager import EscalationManager, EscalationTrigger
 from capability_forge.guardrails.policy import Guardrail, PolicyViolation
 from capability_forge.schema.artifact import Checkpoint, LocatorTier, StepAction
 from capability_forge.surfaces.playwright_driver import LocatorResolutionError, PlaywrightDriver, role_name_selector
@@ -293,6 +294,7 @@ class AgentLoop:
         repeated_state_limit: int = DEFAULT_REPEATED_STATE_LIMIT,
         max_tree_chars: int = DEFAULT_MAX_TREE_CHARS,
         evidence_writer: EvidenceWriter | None = None,
+        escalation_manager: EscalationManager | None = None,
     ):
         self.driver = driver
         self.guardrail = guardrail
@@ -307,6 +309,10 @@ class AgentLoop:
         # None (the default) means no disk writes at all - the scripted-client test suite never
         # sets this, so it stays fast and doesn't litter the repo with test evidence.
         self.evidence_writer = evidence_writer
+        # Optional: when set, a dead-end guard trip (Section 4.6's third named trigger condition,
+        # alongside replay's hard_failure and risky_step_confirmation) hands control to a human
+        # instead of ending the run outright - see the dead-end check in run() below.
+        self.escalation_manager = escalation_manager
 
     def run(self, goal_description: str, target_url: str) -> DiscoveryRun:
         steps: list[StepAction] = []
@@ -355,6 +361,32 @@ class AgentLoop:
                 state_key = f"{snapshot.url}::{snapshot.accessibility_tree}"
                 state_counts[state_key] = state_counts.get(state_key, 0) + 1
                 if state_counts[state_key] >= self.repeated_state_limit:
+                    if self.escalation_manager is not None:
+                        trigger = EscalationTrigger(
+                            reason="dead_end_detected",
+                            run_id=self.escalation_manager.run_id,
+                            goal_description=goal_description,
+                            step_id=None,
+                            description=(
+                                f"The page state hasn't changed after {self.repeated_state_limit} "
+                                "mutating actions - the agent may be stuck."
+                            ),
+                            screenshot_ref=(
+                                self.evidence_writer.save_screenshot(self.driver.page)
+                                if self.evidence_writer is not None
+                                else None
+                            ),
+                        )
+                        record = self.escalation_manager.run_handoff(trigger)
+                        if record.decision == "resume":
+                            # A human may have moved the page forward manually - give this exact
+                            # state a fresh count rather than immediately re-tripping the guard on
+                            # the very next observation, then re-observe from the top of the loop
+                            # instead of proceeding with the (possibly stale) snapshot already in
+                            # hand.
+                            state_counts[state_key] = 0
+                            continue
+                        # decision == "abort" falls through to the same stop as no manager at all.
                     return finish(stop_reason="dead_end_detected")
 
             tree = trim_accessibility_tree(snapshot.accessibility_tree, self.max_tree_chars)

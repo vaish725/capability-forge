@@ -15,14 +15,18 @@ In progress. Built and tested so far: the capability artifact schema, the guardr
 (allowlist, risk classification, redaction), the Playwright surface driver, the discovery loop,
 per-run evidence capture (step-by-step log, screenshots, redacted transcript, written to
 `evidence/<run_id>/`), the artifact recorder (turns a discovery run into a versioned, parameterized
-`CapabilityArtifact`), and the replay engine (executes a saved artifact deterministically, no LLM
+`CapabilityArtifact`), the replay engine (executes a saved artifact deterministically, no LLM
 involved, classifies the outcome as success, business_outcome, recoverable_then_success, or
-hard_failure, and writes the same evidence bundle discovery does when given an evidence writer,
-including a screenshot and log line at the point of a hard failure). The discovery loop has been
-run live against both the bundled fixture and ParaBank's public demo banking site; a real recorded
-example is at `artifacts/parabank_check_account_balance.json`. Not yet built: human-in-the-loop
-escalation and a replay CLI entry point. The demo path below is real and runnable today for
-discovery mode; a replay command will be added here once that CLI exists.
+hard_failure, and writes the same evidence bundle discovery does when given an evidence writer),
+and human-in-the-loop escalation (`escalation/manager.py`): a state machine
+(`AGENT_ACTIVE -> PAUSED_FOR_HUMAN -> HUMAN_ACTIVE -> RESUMING -> AGENT_ACTIVE | DONE`) that hands
+the live browser session to a human via a mock CLI operator console when discovery's dead-end guard
+trips, when a replay step or checkpoint hits a hard failure, or before a risky/irreversible replay
+step runs unconfirmed - and records what the human decided (`handoffs.jsonl`) either way. The
+discovery loop has been run live against both the bundled fixture and ParaBank's public demo
+banking site; a real recorded example is at `artifacts/parabank_check_account_balance.json`. Not
+yet built: a replay CLI entry point. The demo path below is real and runnable today for discovery
+mode; a replay command will be added here once that CLI exists.
 
 ## Setup
 
