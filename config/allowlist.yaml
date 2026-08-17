@@ -3,8 +3,8 @@
 # reason "policy_violation". Update allowed_domains once the discovery target is finalized.
 
 allowed_domains:
-  - example.com   # placeholder, replace with the confirmed discovery/replay target domain
-  - 127.0.0.1     # local server hosting fixtures/hostile_legacy_page.html for offline testing
+  - parabank.parasoft.com   # Parasoft's own public demo banking site, built for test automation
+  - 127.0.0.1               # local server hosting fixtures/hostile_legacy_page.html for offline testing
 
 # Action types permitted per domain. "*" applies to all domains listed above. Must be a subset of
 # StepAction.action_type in capability_forge/schema/artifact.py - validated against it at load

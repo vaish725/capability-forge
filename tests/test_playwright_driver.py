@@ -359,3 +359,45 @@ def test_resolve_role_name_returns_none_when_fallback_also_ambiguous(driver):
         '<div role="alert">Duplicate message</div><div role="alert">Duplicate message</div>'
     )
     assert driver.resolve_role_name("alert", "Duplicate message") is None
+
+
+# --- nth: disambiguating same-role elements that share a name (or lack one entirely) ------------
+# Found live against ParaBank, not the fixture: real legacy markup with no <label for> pairing at
+# all gives two <input>s the exact same (empty) accessible name, which role+name alone can't tell
+# apart. Reproduced here with a minimal standalone page rather than the shared fixture, since
+# nothing about the fixture's own login form needed to change to prove this works.
+
+
+def test_resolve_role_name_with_nth_disambiguates_same_named_elements(driver):
+    driver.page.set_content(
+        '<input type="text"><input type="text"><button onclick="">Go</button>'
+    )
+    first = driver.resolve_role_name("textbox", "", nth=0)
+    second = driver.resolve_role_name("textbox", "", nth=1)
+    assert first is not None and second is not None
+    first.fill("alpha")
+    second.fill("beta")
+    assert first.input_value() == "alpha"
+    assert second.input_value() == "beta"
+
+
+def test_resolve_role_name_without_nth_is_none_when_ambiguous(driver):
+    # The whole point of nth: omitting it when the match is genuinely ambiguous must still fail
+    # closed, not silently pick one.
+    driver.page.set_content('<input type="text"><input type="text">')
+    assert driver.resolve_role_name("textbox", "") is None
+
+
+def test_build_locator_tiers_with_nth_lowers_confidence_and_still_resolves(driver):
+    driver.page.set_content('<input type="text" id="a"><input type="text" id="b">')
+    tiers = driver.build_locator_tiers("textbox", "", nth=1)
+    assert tiers[0].strategy == "role"
+    assert tiers[0].value == 'role=textbox[name=""] >> nth=1'
+    assert tiers[0].confidence == 0.75
+    assert tiers[1] == locator("css", "#b", confidence=0.6)
+
+
+def test_build_locator_tiers_with_nth_out_of_range_raises(driver):
+    driver.page.set_content('<input type="text">')
+    with pytest.raises(LocatorResolutionError):
+        driver.build_locator_tiers("textbox", "", nth=5)

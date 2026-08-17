@@ -39,6 +39,14 @@ the alert's computed accessible name is empty; its text is exposed as content, n
 role=X[name="Y"] selector matches nothing, this driver retries by filtering elements with that
 role by visible text instead - looser (substring, case-insensitive) but only engaged as a fallback,
 and still required to resolve to exactly one element.
+
+role+name resolution has a third, orthogonal gap: found live against ParaBank (real target, not the
+fixture) - some legacy markup gives an element no accessible name at all (a bare `<input>` next to
+an unlabeled `<p>`, no `<label for>` pairing), and when more than one same-role element shares that
+same empty name, name alone can't tell them apart. An optional `nth` (0-based index among elements
+matching that exact role+name, in DOM order) disambiguates without falling back to pixel
+coordinates - still a structural locator, just positional rather than name-based. Encoded as a
+trailing `>> nth=N` on the selector string, which Playwright resolves natively.
 """
 
 import re
@@ -52,7 +60,20 @@ from capability_forge.schema.artifact import Checkpoint, LocatorTier, StepAction
 # Matches the role=X[name="Y"] selector strings this module constructs itself (resolve_role_name,
 # build_locator_tiers, and the discovery loop's checkpoint locators all use this exact shape) -
 # used only to recover role/name for the accessible-name-computation fallback described above.
+# Deliberately anchored to the end ($): an nth-qualified selector (see role_name_selector) has a
+# " >> nth=N" suffix and will not match here, which is correct - nth already fully disambiguates
+# the element, so the by-visible-text fallback (which re-searches without nth) doesn't apply to it.
 _ROLE_NAME_SELECTOR_PATTERN = re.compile(r'^role=([a-zA-Z]+)\[name="(.*)"\]$')
+
+
+def role_name_selector(role: str, name: str, nth: int | None) -> str:
+    """Build a role=X[name="Y"] selector, optionally qualified with a trailing '>> nth=N' to
+    disambiguate elements that share the exact same role and (possibly empty) accessible name -
+    see the module docstring's third locator-resolution fallback."""
+    selector = f'role={role}[name="{name}"]'
+    if nth is not None:
+        selector += f" >> nth={nth}"
+    return selector
 
 
 class LocatorResolutionError(Exception):
@@ -175,24 +196,31 @@ class PlaywrightDriver:
             outputs[name] = value_locator.inner_text()
         return outputs
 
-    def resolve_role_name(self, role: str, name: str) -> Locator | None:
+    def resolve_role_name(self, role: str, name: str, nth: int | None = None) -> Locator | None:
         """Resolve a role + accessible-name pair - the terms an LLM reads directly off the
         accessibility tree returned by observe() - to a unique element, or None if it doesn't
         resolve. Public entry point for callers (the discovery loop) that only know an element by
-        its accessibility identity, not a raw selector string."""
-        return self._find_unique(f'role={role}[name="{name}"]')
+        its accessibility identity, not a raw selector string. nth disambiguates when multiple
+        elements share the exact same role+name (see module docstring's third fallback) - omit it
+        when role+name is already unique on its own."""
+        return self._find_unique(role_name_selector(role, name, nth))
 
-    def build_locator_tiers(self, role: str, name: str) -> list[LocatorTier]:
-        """Resolve a role + accessible-name pair and derive a ranked locator tier list for it:
-        role (primary, confidence 0.9) always; a css id-based fallback (confidence 0.6) if the
-        resolved element has an id attribute. No coordinate tier is derived here - discovery-time
-        proposals are role/css only, by design (see discovery/agent_loop.py's module docstring for
-        why). Raises LocatorResolutionError if role+name doesn't resolve to a unique element."""
-        role_value = f'role={role}[name="{name}"]'
+    def build_locator_tiers(self, role: str, name: str, nth: int | None = None) -> list[LocatorTier]:
+        """Resolve a role + accessible-name pair (optionally qualified by nth, see
+        resolve_role_name) and derive a ranked locator tier list for it: role (primary, confidence
+        0.9) always; a css id-based fallback (confidence 0.6) if the resolved element has an id
+        attribute. No coordinate tier is derived here - discovery-time proposals are role/css only,
+        by design (see discovery/agent_loop.py's module docstring for why). Raises
+        LocatorResolutionError if role+name(+nth) doesn't resolve to a unique element."""
+        role_value = role_name_selector(role, name, nth)
         locator = self._find_unique(role_value)
         if locator is None:
-            raise LocatorResolutionError(f"role={role!r} name={name!r} did not resolve to a unique element")
-        tiers = [LocatorTier(strategy="role", value=role_value, confidence=0.9)]
+            raise LocatorResolutionError(f"role={role!r} name={name!r} nth={nth!r} did not resolve to a unique element")
+        # nth-qualified locators are positional, not name-based - a lower confidence than a plain
+        # role+name match, but still well above the css id-fallback tier since it's still a
+        # structural (not pixel) locator.
+        confidence = 0.75 if nth is not None else 0.9
+        tiers = [LocatorTier(strategy="role", value=role_value, confidence=confidence)]
         element_id = locator.get_attribute("id")
         if element_id:
             tiers.append(LocatorTier(strategy="css", value=f"#{element_id}", confidence=0.6))
