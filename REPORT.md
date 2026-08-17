@@ -24,9 +24,12 @@ stronger claim than "the design allows for it": it's what actually happened when
 features were built.
 
 Two other decisions worth naming directly: perception uses the accessibility tree and role
-locators as the primary strategy, CSS as fallback, and coordinate as last resort - more
-engineering than raw CSS selectors, but it survives markup churn closer to how a human or
-screen-reader would. And the unit handed to a human on escalation is the Playwright browser
+locators as the primary strategy, CSS as fallback, and coordinate as last resort (a locator is how
+a recorded step identifies which specific on-screen element to act on, not just that one exists;
+"tier" means trying progressively less reliable identification methods in that order, falling back
+only when an earlier one fails to resolve to exactly one element) - more engineering than raw CSS
+selectors, but it survives markup churn closer to how a human or screen-reader would. And the unit
+handed to a human on escalation is the Playwright browser
 context itself, which requires non-headless (or a live debug endpoint) for any run that might
 escalate - a real cost, accepted because it's what makes a mid-run handoff actually work rather
 than just be designed for.
@@ -79,23 +82,27 @@ recorded with, but still resolved.
 
 "Recoverable" names three genuinely different mechanisms, unified only by convenience:
 
-- Discovery's interstitial/retry handling - prose-level guidance to the model.
+- Discovery's handling of unexpected pop-up screens mid-flow (e.g. a session-timeout warning) -
+  prose-level guidance to the model.
 - Discovery's own evidence log - a dispatched-but-unrecorded attempt, retried by the LLM.
 - Replay's locator-tier fallback.
 
 Replay only ever produces the third, since it has no LLM to improvise the other two - stated
 explicitly in `outcome_classifier.py`'s own docstring rather than left to imply replay can detect
-interstitials, which it structurally cannot.
+an unexpected pop-up screen, which it structurally cannot.
 
 Real, checked-in evidence for the taxonomy: `evidence/replay_1786951099/` (plain success),
-`evidence/replay_1786951120/` (`hard_failure`, via the fixture's own deterministic `SYS-500`
-trigger - `screenshots/step_06.png` shows the actual error state, not a synthetic one). The
-locator-fallback tier itself is not just a design idea: ParaBank's real login form has two
-`<input>` fields with no accessible name at all (no `<label for>` pairing), which role+name alone
-cannot disambiguate - the fixture never exposed this, since it was built by the same person who
-built the driver and was biased toward clean labels. Fixed by adding an optional positional `nth`
-tier (rated at lower confidence, 0.75 vs 0.9, since it's positional rather than semantic), verified
-against the real target, not just the fixture.
+`evidence/replay_1786951120/` (`hard_failure`, via the fixture's own deliberately unrecoverable
+`SYS-500` trigger, built specifically to prove replay detects and reports failure correctly rather
+than masking it - `screenshots/step_06.png` shows the actual error state).
+
+Separately, the locator-fallback tier proved itself against a real, unplanned failure too:
+ParaBank's real login form has two `<input>` fields with no accessible name at all (no
+`<label for>` pairing), which role+name alone cannot disambiguate - the fixture never exposed
+this, since it was built by the same person who built the driver and was biased toward clean
+labels. Fixed by adding an optional positional `nth` tier (rated at lower confidence, 0.75 vs 0.9,
+since it's positional rather than semantic), verified against the real target, not just the
+fixture.
 
 ## Heterogeneity & multi-tenant
 
@@ -194,8 +201,9 @@ live-target discovery run, so the fix is independently verifiable rather than as
   window.** Deliberate, not an oversight: CDP is the credible answer for handing a session to a
   *remote* operator, but this project's demo only ever needs a human at the same terminal. Would
   build CDP exposure first if that changed.
-- **Tier 2 stretch goals**, per the design's own instruction to stop after Tier 1 unless clearly
-  ahead of schedule. Confidence & approval gating (a `draft`/`approved` state gated on
+- **Lower-priority stretch goals**, deprioritized per the design's own instruction to stop after
+  the priority stretch goals unless clearly ahead of schedule. Confidence & approval gating (a
+  `draft`/`approved` state gated on
   `reliability.pass_rate`, `invoke()` refusing `draft` without `force=true`) is a low-effort
   extension of the reliability work already built - would build it next, since the signal it would
   gate on already exists. Cross-tenant canonicalization is the more expensive item - correctly

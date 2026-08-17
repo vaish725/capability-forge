@@ -28,7 +28,7 @@ One process, two modes sharing one artifact contract and one core:
 
 ## Status
 
-Feature-complete against the assignment's six core requirements, plus both Tier 1 stretch goals.
+Feature-complete against the assignment's six core requirements, plus both priority stretch goals.
 
 - **Discovery** - an LLM drives a real browser (Playwright) through an observe-decide-act loop,
   wrapped in the same guardrail policy (allowlist, risk classification, redaction) that wraps
@@ -45,16 +45,16 @@ Feature-complete against the assignment's six core requirements, plus both Tier 
   awaits confirmation - and records what the human decided either way.
 - **Both CLI entry points are real**: `python -m capability_forge.discover` and
   `python -m capability_forge.replay` (see the demo path below).
-- **Both Tier 1 stretch goals are built**: multi-run stability (`replay/reliability.py`, replays
+- **Both priority stretch goals are built**: multi-run stability (`replay/reliability.py`, replays
   an artifact N times against N independent fresh pages and writes a real `ReliabilityInfo` back
   onto it) and an agent-facing capability API (`api/main.py` - `GET /capabilities` /
   `POST /capabilities/{id}/invoke`).
 
 Every one of the above has a real, checked-in example backing it - see Evidence below, not just
 this list. Discovery has been run live against both the bundled fixture and ParaBank's public demo
-banking site (`artifacts/parabank_check_account_balance.json`). Not attempted: the two Tier 2
-stretch-stretch goals (confidence/approval gating, cross-tenant canonicalization) - see
-`REPORT.md`'s Cuts section for why.
+banking site (`artifacts/parabank_check_account_balance.json`). Not attempted: two lower-priority
+stretch goals (confidence/approval gating, cross-tenant canonicalization) - see `REPORT.md`'s Cuts
+section for why they were deprioritized.
 
 ## Setup
 
@@ -109,8 +109,8 @@ instead - `00000` is the fixture's own deterministic trigger for a simulated bac
 (`SYS-500`), so the checkpoint never resolves and the run reports `hard_failure` with the failed
 step, expected/observed state, and a screenshot of the actual error.
 
-To measure an artifact's reliability for real (Tier 1 stretch goal #2) - runs it N independent
-times against N fresh pages and writes the aggregate pass rate/timing back onto the artifact file:
+To measure an artifact's reliability for real (stretch goal) - runs it N independent times against
+N fresh pages and writes the aggregate pass rate/timing back onto the artifact file:
 
 ```
 python -m scripts.run_stability_check --artifact artifacts/fixture_check_account_balance.json --params '{"member_id": "12345"}'
@@ -119,7 +119,7 @@ python -m scripts.run_stability_check --artifact artifacts/fixture_check_account
 `artifacts/fixture_check_account_balance.json` already carries real reliability data from a run of
 this, not a placeholder - `pass_rate: 1.0` over 5 independent runs.
 
-To run the agent-facing capability API (Tier 1 stretch goal #1) with the fixture server still up:
+To run the agent-facing capability API (stretch goal) with the fixture server still up:
 
 ```
 uvicorn capability_forge.api.main:app

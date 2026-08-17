@@ -31,14 +31,14 @@ Two closely related but distinct questions, answered by the two functions here:
        means; replay has no such thing.
    Replay's classifier can only ever see one mechanism - locator-tier fallback - because it is the
    only recovery path a driver with no LLM behind it has. Collapsing it onto the same word as the
-   other two would suggest replay can detect interstitials or retry transient failures the way
-   discovery does; it cannot. A future reliability scorer or escalation threshold reading
-   ReplayResult should treat "recoverable" as exactly and only "resolved via a non-primary locator
-   tier" - see ReplayResult.steps in engine.py for the per-step detail (which tier, on which step)
-   that a coarse run-level `recoverable_then_success` status alone would otherwise erase (one step
-   falling back once and every step falling back are very different signals about whether an
-   artifact's primary locators are still trustworthy, and only the per-step list can tell them
-   apart).
+   other two would suggest replay can detect an unexpected pop-up screen or retry transient
+   failures the way discovery does; it cannot. A future reliability scorer or escalation threshold
+   reading ReplayResult should treat "recoverable" as exactly and only "resolved via a non-primary
+   locator tier" - see ReplayResult.steps in engine.py for the per-step detail (which tier, on
+   which step) that a coarse run-level `recoverable_then_success` status alone would otherwise
+   erase (one step falling back once and every step falling back are very different signals about
+   whether an artifact's primary locators are still trustworthy, and only the per-step list can
+   tell them apart).
 
 2. classify_replay_status: given every step's outcome and what the artifact itself expected
    (CapabilityArtifact.expected_outcome_type - added specifically because a business_outcome

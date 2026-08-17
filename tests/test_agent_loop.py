@@ -228,12 +228,12 @@ def test_business_outcome_run(driver, guardrail, fixture_server):
     assert result.business_outcome_reason == "member_not_found"
 
 
-# --- recoverable interstitial: proves the loop mechanics support dismiss-then-continue ----------
+# --- recoverable pop-up screen: proves the loop mechanics support dismiss-then-continue ---------
 
 
 def test_recoverable_interstitial_dismissed_then_goal_reached(driver, guardrail, fixture_server):
     # Scripts the "correct" behavior a well-prompted Claude should exhibit for member 88888
-    # (which triggers the session-notice interstitial): dismiss it, then continue to the goal.
+    # (which triggers the session-notice pop-up screen): dismiss it, then continue to the goal.
     # This proves the loop's tool dispatch supports that pattern with no special-casing required -
     # it does NOT test whether a real Claude call would choose to do this; that's a live-run
     # concern, not something a scripted unit test can verify.
