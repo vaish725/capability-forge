@@ -1,13 +1,13 @@
 {
   "artifact_id": "parabank_check_account_balance",
   "schema_version": "1.0",
-  "created_at": "2026-08-17T01:44:24.189983Z",
+  "created_at": "2026-08-17T03:05:20.065830Z",
   "target": {
     "base_url": "https://parabank.parasoft.com/parabank/index.htm",
     "app_name": "parabank",
     "tenant_overrides": null
   },
-  "goal_description": "Log in to ParaBank with username '{{username}}' and password '{{password}}'. Then find and report the current balance of account 16896.",
+  "goal_description": "Log in to ParaBank with username '{{username}}' and password '{{password}}'. Then find and report the current balance of account 13566.",
   "inputs": [
     {
       "name": "password",
@@ -22,7 +22,13 @@
       "description": "Value substituted for {{username}}."
     }
   ],
-  "outputs": [],
+  "outputs": [
+    {
+      "name": "balance",
+      "type": "string",
+      "description": "The account's current balance."
+    }
+  ],
   "steps": [
     {
       "step_id": "step_1",
@@ -36,7 +42,7 @@
       ],
       "input_value": "{{username}}",
       "risk": "safe_reversible",
-      "description": "Enter username into login form"
+      "description": "Enter username"
     },
     {
       "step_id": "step_2",
@@ -50,7 +56,7 @@
       ],
       "input_value": "{{password}}",
       "risk": "safe_reversible",
-      "description": "Enter password into login form"
+      "description": "Enter password"
     },
     {
       "step_id": "step_3",
@@ -70,41 +76,21 @@
       "step_id": "step_4",
       "action_type": "navigate",
       "locators": [],
-      "input_value": "https://parabank.parasoft.com/parabank/activity.htm?id=16896",
+      "input_value": "https://parabank.parasoft.com/parabank/activity.htm?id=13566",
       "risk": "safe_reversible",
-      "description": "Navigate directly to account activity/details page for account 16896"
-    },
-    {
-      "step_id": "step_5",
-      "action_type": "navigate",
-      "locators": [],
-      "input_value": "https://parabank.parasoft.com/parabank/overview.htm",
-      "risk": "safe_reversible",
-      "description": "Check accounts overview list"
-    },
-    {
-      "step_id": "step_6",
-      "action_type": "wait",
-      "locators": [
-        {
-          "strategy": "role",
-          "value": "role=table[name=\"\"]",
-          "confidence": 0.9
-        }
-      ],
-      "input_value": null,
-      "risk": "safe_reversible",
-      "description": "Wait for accounts table to populate"
+      "description": "Navigate directly to account activity page for account 13566 to find balance"
     }
   ],
   "checkpoint": {
-    "description": "Logged in as {{username}} and found that account 16896 has a current balance of $423.50 (available amount also $423.50).",
+    "description": "Logged into ParaBank as {{username}} and confirmed that account 13566 (a CHECKING account) has a current balance of $515.50.",
     "locator": {
       "strategy": "role",
-      "value": "role=row[name=\"16896 $423.50 $423.50\"]",
+      "value": "role=row[name=\"Balance: $515.50\"]",
       "confidence": 0.9
     },
-    "extract": null
+    "extract": {
+      "balance": "role=cell[name=\"$515.50\"] >> nth=0"
+    }
   },
   "risk_summary": "safe",
   "reliability": null

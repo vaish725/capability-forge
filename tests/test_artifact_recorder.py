@@ -220,12 +220,12 @@ def test_records_the_real_parabank_run_shape():
     # recorder actually has to work with, not an idealized shape.
     steps = [
         step(
-            step_id="step_1", action_type="type", input_value="[SCRUBBED_SECRET]",
+            step_id="step_1", action_type="type", input_value="demo_user_16896",
             locators=[locator(value='role=textbox[name=""] >> nth=0', confidence=0.75)],
             description="Enter username into login form",
         ),
         step(
-            step_id="step_2", action_type="type", input_value="[SCRUBBED_SECRET]",
+            step_id="step_2", action_type="type", input_value="demo_pw_16896x",
             locators=[locator(value='role=textbox[name=""] >> nth=1', confidence=0.75)],
             description="Enter password into login form",
         ),
@@ -246,17 +246,17 @@ def test_records_the_real_parabank_run_shape():
     # word for word - both genuinely repeated the literal username in plain text, exactly the leak
     # test_param_map_also_templates_goal_description_and_checkpoint_description guards against.
     checkpoint = Checkpoint(
-        description="Logged in as [SCRUBBED_SECRET] and found that account 16896 has a current balance of $423.50 (available amount also $423.50).",
+        description="Logged in as demo_user_16896 and found that account 16896 has a current balance of $423.50 (available amount also $423.50).",
         locator=locator(value='role=row[name="16896 $423.50 $423.50"]', confidence=0.9),
         extract=None,
     )
     run = DiscoveryRun(
-        goal_description="Log in to ParaBank with username '[SCRUBBED_SECRET]' and password '[SCRUBBED_SECRET]'. Then find and report the current balance of account 16896.",
+        goal_description="Log in to ParaBank with username 'demo_user_16896' and password 'demo_pw_16896x'. Then find and report the current balance of account 16896.",
         target_url="https://parabank.parasoft.com/parabank/index.htm",
         steps=steps,
         stop_reason="goal_complete",
         checkpoint=checkpoint,
-        summary="Logged in as [SCRUBBED_SECRET] and found that account 16896 has a current balance of $423.50 (available amount also $423.50).",
+        summary="Logged in as demo_user_16896 and found that account 16896 has a current balance of $423.50 (available amount also $423.50).",
         extract_log=[],
     )
 
@@ -264,7 +264,7 @@ def test_records_the_real_parabank_run_shape():
         run,
         artifact_id="parabank_check_balance",
         app_name="parabank",
-        param_map={"[SCRUBBED_SECRET]": "username", "[SCRUBBED_SECRET]": "password"},
+        param_map={"demo_user_16896": "username", "demo_pw_16896x": "password"},
         # 16896 deliberately left unmapped: it also appears inside the checkpoint's own recorded
         # text, which the schema has no templating support for - see the module docstring.
     )
@@ -283,8 +283,8 @@ def test_records_the_real_parabank_run_shape():
     # The whole point: no credential anywhere in the saved artifact, not just in the one field
     # that was checked by hand originally.
     dumped_text = artifact.model_dump_json()
-    assert "[SCRUBBED_SECRET]" not in dumped_text
-    assert "[SCRUBBED_SECRET]" not in dumped_text
+    assert "demo_user_16896" not in dumped_text
+    assert "demo_pw_16896x" not in dumped_text
 
     # Full round trip, exactly what save()/load() does - the actual artifact this run would
     # produce on disk.
