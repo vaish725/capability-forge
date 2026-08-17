@@ -24,9 +24,12 @@ the live browser session to a human via a mock CLI operator console when discove
 trips, when a replay step or checkpoint hits a hard failure, or before a risky/irreversible replay
 step runs unconfirmed - and records what the human decided (`handoffs.jsonl`) either way. The
 discovery loop has been run live against both the bundled fixture and ParaBank's public demo
-banking site; a real recorded example is at `artifacts/parabank_check_account_balance.json`. Not
-yet built: a replay CLI entry point. The demo path below is real and runnable today for discovery
-mode; a replay command will be added here once that CLI exists.
+banking site; a real recorded example is at `artifacts/parabank_check_account_balance.json`. A real
+evidence bundle showing escalation firing end to end (a run that gets stuck, pauses, a human
+resumes it, and it completes the goal) is at `evidence/discovery_1786949371/` - see
+`scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about that
+run. Not yet built: a replay CLI entry point. The demo path below is real and runnable today for
+discovery mode; a replay command will be added here once that CLI exists.
 
 ## Setup
 
@@ -72,9 +75,10 @@ engine is implemented.
 - `capability_forge/utils/` - shared helpers, including log/artifact redaction.
 - `config/` - guardrail policy (`allowlist.yaml`).
 - `artifacts/` - recorded capability artifacts (JSON).
-- `evidence/` - per-run logs, screenshots, and transcripts.
+- `evidence/` - per-run logs, screenshots, transcripts, and handoff records.
 - `fixtures/` - a static local page used for offline, no-network replay testing.
-- `tests/` - unit tests for the classifier and guardrails, plus one replay integration test.
+- `scripts/` - standalone scripts for generating specific evidence examples on demand.
+- `tests/` - the project's test suite.
 
 ## License
 
