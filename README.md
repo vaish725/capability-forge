@@ -28,9 +28,13 @@ banking site; a real recorded example is at `artifacts/parabank_check_account_ba
 evidence bundle showing escalation firing end to end (a run that gets stuck, pauses, a human
 resumes it, and it completes the goal) is at `evidence/discovery_1786949371/` - see
 `scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about that
-run. Both discovery and replay have a real CLI entry point now (`python -m capability_forge.discover`
-/ `python -m capability_forge.replay`, see the demo path below) - the only remaining piece is
-`REPORT.md`.
+run. Both discovery and replay have a real CLI entry point (`python -m capability_forge.discover` /
+`python -m capability_forge.replay`, see the demo path below). Both Tier 1 stretch goals from the
+design are also built: multi-run stability (`replay/reliability.py` - replays an artifact N times
+against N independent fresh pages and writes a real `ReliabilityInfo` back onto it) and an
+agent-facing capability API (`api/main.py` - `GET /capabilities` lists every recorded artifact with
+its typed input/output contract and reliability data, `POST /capabilities/{id}/invoke` runs a real
+replay and returns the result). The only remaining piece is `REPORT.md`.
 
 ## Setup
 
@@ -85,6 +89,28 @@ instead - `00000` is the fixture's own deterministic trigger for a simulated bac
 (`SYS-500`), so the checkpoint never resolves and the run reports `hard_failure` with the failed
 step, expected/observed state, and a screenshot of the actual error.
 
+To measure an artifact's reliability for real (Tier 1 stretch goal #2) - runs it N independent
+times against N fresh pages and writes the aggregate pass rate/timing back onto the artifact file:
+
+```
+python -m scripts.run_stability_check --artifact artifacts/fixture_check_account_balance.json --params '{"member_id": "12345"}'
+```
+
+`artifacts/fixture_check_account_balance.json` already carries real reliability data from a run of
+this, not a placeholder - `pass_rate: 1.0` over 5 independent runs.
+
+To run the agent-facing capability API (Tier 1 stretch goal #1) with the fixture server still up:
+
+```
+uvicorn capability_forge.api.main:app
+```
+
+`GET /capabilities` lists every recorded artifact with its typed input/output contract and
+reliability data; `POST /capabilities/{artifact_id}/invoke` (body: `{"params": {...}, "confirm_risky": false}`)
+runs a real replay and returns the `ReplayResult` - a hard_failure is returned as a normal 200
+response (a well-formed result, not a broken request), an unknown artifact_id 404s, and a param
+mismatch 400s.
+
 ## Evidence
 
 Every claim above has a real, checked-in example backing it, not just a description:
@@ -102,18 +128,19 @@ Every claim above has a real, checked-in example backing it, not just a descript
 ## Folder structure
 
 - `capability_forge/discovery/` - the observe-decide-act loop that learns a task and records it.
-- `capability_forge/replay/` - deterministic execution of a recorded artifact, no LLM involved.
+- `capability_forge/replay/` - deterministic execution of a recorded artifact (no LLM involved),
+  plus the multi-run stability check that populates `ReliabilityInfo`.
 - `capability_forge/schema/` - the typed capability artifact contract (Pydantic models).
 - `capability_forge/guardrails/` - allowlist, risk classification, and redaction policy.
 - `capability_forge/escalation/` - human-in-the-loop pause/handoff/resume state machine.
 - `capability_forge/surfaces/` - the driver that observes/acts on a concrete UI (Playwright today).
-- `capability_forge/api/` - optional thin API exposing recorded capabilities to an agent.
+- `capability_forge/api/` - thin FastAPI layer exposing recorded capabilities to an agent.
 - `capability_forge/utils/` - shared helpers, including log/artifact redaction.
 - `config/` - guardrail policy (`allowlist.yaml`).
 - `artifacts/` - recorded capability artifacts (JSON).
 - `evidence/` - per-run logs, screenshots, transcripts, and handoff records.
 - `fixtures/` - a static local page used for offline, no-network replay testing.
-- `scripts/` - standalone scripts for generating specific evidence examples on demand.
+- `scripts/` - standalone scripts for generating evidence examples and refreshing reliability data.
 - `tests/` - the project's test suite.
 
 ## License
