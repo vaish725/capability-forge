@@ -21,15 +21,36 @@ finish() pattern. A typed/selected step's rendered value is registered as a secr
 is dispatched, mirroring discovery's own discipline (see evidence.py) for the same reason: a value
 that isn't scrubbed until after it's already been observed once is scrubbed too late. No
 transcript.json is written for replay - that file is specifically the LLM message history, and a
-replay run has no LLM turns to record. Not yet wired up here, left as explicit scope for a later
-pass: the escalation hand-off that a hard_failure or a risky_irreversible step is meant to trigger
-(escalation/manager.py doesn't exist yet).
+replay run has no LLM turns to record.
+
+Escalation (escalation/manager.py), when an EscalationManager is supplied, covers exactly the two
+trigger conditions Section 4.6 assigns to replay:
+  - risky_step_confirmation: before a risky_irreversible step is dispatched, unless the caller
+    already passed confirm_risky=True, control is handed to a human; "resume" proceeds with the
+    step, "abort" (or declining to answer) ends the run as a hard_failure. Without an
+    EscalationManager at all, a risky step with confirm_risky=False fails closed rather than
+    executing unconfirmed - the design's own stated default (Section 8/9: "risky actions in
+    replay mode are, by default, executed only if the calling agent explicitly passes
+    confirm_risky=true").
+  - hard_failure: if a step's driver.act() call raises, or the checkpoint never resolves, control
+    is handed to a human before the run is finalized. A "resume" decision means the human may have
+    fixed something live in the browser, so the exact same action is retried - exactly once, never
+    looped - and the run continues normally if it now succeeds. "abort" (or no EscalationManager)
+    finalizes as hard_failure exactly as before this pass.
+A guardrail PolicyViolation and an unresolved {{param}} in a navigate destination are deliberately
+NOT escalation triggers, even though both also produce a hard_failure - a policy block is a
+safety decision, not a transient technical fault a human fixing the live page would resolve, and
+escalating past one would undermine what the allowlist is for; an unresolved param is an artifact-
+authoring bug (a schema-level guarantee that was supposed to prevent this was skipped upstream),
+not something waiting in the browser to be fixed by hand. Both keep failing closed with no human
+in the loop, exactly as before this pass.
 """
 
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from capability_forge.escalation.manager import EscalationManager, EscalationTrigger
 from capability_forge.guardrails.policy import Guardrail, PolicyViolation
 from capability_forge.replay.outcome_classifier import ReplayStatus, StepOutcomeType, classify_replay_status, classify_step_outcome
 from capability_forge.schema.artifact import CapabilityArtifact, LocatorTier, StepAction, render_template
@@ -81,17 +102,30 @@ class ReplayResult:
 
 class ReplayEngine:
     """Runs one CapabilityArtifact against a driver-controlled page. Stateless across calls -
-    holds only the driver, guardrail, and (optionally) evidence writer it was constructed with.
-    evidence_writer is optional and off by default: a caller that doesn't want evidence written
-    (e.g. most of this module's own tests, which assert on the returned ReplayResult directly)
-    simply doesn't pass one, matching how AgentLoop already treats it."""
+    holds only the driver, guardrail, and (optionally) evidence writer / escalation manager it was
+    constructed with. evidence_writer and escalation_manager are both optional and off by default:
+    a caller that wants neither (e.g. most of this module's own tests, which assert on the
+    returned ReplayResult directly) simply doesn't pass them, matching how AgentLoop already
+    treats evidence_writer."""
 
-    def __init__(self, driver: PlaywrightDriver, guardrail: Guardrail, evidence_writer: EvidenceWriter | None = None):
+    def __init__(
+        self,
+        driver: PlaywrightDriver,
+        guardrail: Guardrail,
+        evidence_writer: EvidenceWriter | None = None,
+        escalation_manager: EscalationManager | None = None,
+    ):
         self.driver = driver
         self.guardrail = guardrail
         self.evidence_writer = evidence_writer
+        self.escalation_manager = escalation_manager
 
-    def run(self, artifact: CapabilityArtifact, params: dict[str, Any] | None = None) -> ReplayResult:
+    def run(self, artifact: CapabilityArtifact, params: dict[str, Any] | None = None, confirm_risky: bool = False) -> ReplayResult:
+        """confirm_risky: the calling agent's explicit, up-front confirmation that any
+        risky_irreversible step in this artifact is authorized to run. Defaults to False, matching
+        the design's own stated default (Section 8/9) - a risky step is never executed just
+        because it's in the artifact, only because the caller (or, failing that, a human via
+        escalation) explicitly said so for this specific run."""
         normalized_params = _validate_and_normalize_params(artifact, params or {})
         run_start = time.monotonic()
 
@@ -113,6 +147,11 @@ class ReplayEngine:
             except PolicyViolation as exc:
                 return self._hard_failure(artifact, step_records, run_start, step.step_id, step.description, f"blocked by policy: {exc}")
 
+            if step.risk == "risky_irreversible" and not confirm_risky:
+                confirmed, failure = self._confirm_risky_step(artifact, step_records, run_start, step)
+                if not confirmed:
+                    return failure  # either declined by the operator, or no way to ask - fails closed either way
+
             # Register a typed/selected value as a secret to scrub *before* dispatching the step,
             # not after - the whole point of register_secret() is that it must be known before the
             # value has a chance to resurface unprompted in a later page observation (see the
@@ -129,7 +168,7 @@ class ReplayEngine:
 
             step_start = time.monotonic()
             try:
-                resolved_tier = self.driver.act(step, normalized_params)
+                resolved_tier = self._act_with_escalation(artifact, step, normalized_params)
             except Exception as exc:  # noqa: BLE001 - any failure to execute this step is a hard_failure, whatever its type
                 return self._hard_failure(artifact, step_records, run_start, step.step_id, step.description, str(exc))
             duration_ms = int((time.monotonic() - step_start) * 1000)
@@ -146,7 +185,7 @@ class ReplayEngine:
             self._log_step(step, resolved_tier, destination, outcome_type, duration_ms)
 
         try:
-            outputs = self.driver.verify_checkpoint(artifact.checkpoint)
+            outputs = self._verify_checkpoint_with_escalation(artifact)
         except CheckpointNotReachedError as exc:
             return self._hard_failure(artifact, step_records, run_start, "checkpoint", artifact.checkpoint.description, str(exc))
 
@@ -208,6 +247,89 @@ class ReplayEngine:
             duration_ms=duration_ms,
             evidence_ref=evidence_ref,
         )
+
+    def _confirm_risky_step(
+        self,
+        artifact: CapabilityArtifact,
+        step_records: list[StepReplayRecord],
+        run_start: float,
+        step: StepAction,
+    ) -> tuple[bool, "ReplayResult | None"]:
+        """Gate a risky_irreversible step behind explicit confirmation - either the caller already
+        gave it (confirm_risky=True, checked by the caller before this is ever reached) or a human
+        grants it live via escalation. Returns (True, None) if the step is cleared to proceed, or
+        (False, <the finished hard_failure ReplayResult>) if not. Fails closed with no
+        EscalationManager available - an unconfirmed risky step never executes just because
+        nobody was around to ask, per the design's own stated default (see the module docstring)."""
+        if self.escalation_manager is None:
+            return False, self._hard_failure(
+                artifact, step_records, run_start, step.step_id, step.description,
+                "risky_irreversible step requires confirm_risky=True or an EscalationManager; neither was provided",
+            )
+        trigger = EscalationTrigger(
+            reason="risky_step_confirmation",
+            run_id=self.escalation_manager.run_id,
+            goal_description=artifact.goal_description,
+            step_id=step.step_id,
+            description=f"About to perform a risky, irreversible action: {step.description}",
+            screenshot_ref=self._maybe_screenshot(),
+        )
+        record = self.escalation_manager.run_handoff(trigger)
+        if record.decision != "resume":
+            return False, self._hard_failure(
+                artifact, step_records, run_start, step.step_id, step.description,
+                f"risky step not confirmed by operator (decision={record.decision!r}): {record.notes or 'no note given'}",
+            )
+        return True, None
+
+    def _act_with_escalation(self, artifact: CapabilityArtifact, step: StepAction, normalized_params: dict[str, str]) -> LocatorTier | None:
+        """Execute driver.act() once; if it raises and an escalation_manager is available, hand
+        the live session to a human and retry the exact same call once if they resume. No retry
+        loop beyond that single extra attempt - if the step still fails after a human had a
+        chance to intervene live, it's a genuine hard_failure, not something worth asking again."""
+        try:
+            return self.driver.act(step, normalized_params)
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see the try/except this wraps in run()
+            if self.escalation_manager is None:
+                raise
+            trigger = EscalationTrigger(
+                reason="hard_failure",
+                run_id=self.escalation_manager.run_id,
+                goal_description=artifact.goal_description,
+                step_id=step.step_id,
+                description=f"Step {step.step_id!r} failed: {exc}",
+                screenshot_ref=self._maybe_screenshot(),
+            )
+            record = self.escalation_manager.run_handoff(trigger)
+            if record.decision != "resume":
+                raise
+            return self.driver.act(step, normalized_params)
+
+    def _verify_checkpoint_with_escalation(self, artifact: CapabilityArtifact) -> dict[str, str]:
+        """Same one-retry-after-a-human-looked-at-it pattern as _act_with_escalation, for the
+        checkpoint itself never resolving."""
+        try:
+            return self.driver.verify_checkpoint(artifact.checkpoint)
+        except CheckpointNotReachedError as exc:
+            if self.escalation_manager is None:
+                raise
+            trigger = EscalationTrigger(
+                reason="hard_failure",
+                run_id=self.escalation_manager.run_id,
+                goal_description=artifact.goal_description,
+                step_id="checkpoint",
+                description=f"Checkpoint not reached: {exc}",
+                screenshot_ref=self._maybe_screenshot(),
+            )
+            record = self.escalation_manager.run_handoff(trigger)
+            if record.decision != "resume":
+                raise
+            return self.driver.verify_checkpoint(artifact.checkpoint)
+
+    def _maybe_screenshot(self) -> str | None:
+        if self.evidence_writer is None:
+            return None
+        return self.evidence_writer.save_screenshot(self.driver.page)
 
     def _hard_failure(
         self,

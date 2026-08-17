@@ -10,10 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from capability_forge.escalation.manager import EscalationManager, OperatorDecision
 from capability_forge.guardrails.policy import AllowlistPolicy, Guardrail
 from capability_forge.replay.engine import ParamValidationError, ReplayEngine
 from capability_forge.schema.artifact import CapabilityArtifact, Checkpoint, InputParam, LocatorTier, OutputField, StepAction, TargetSpec
-from capability_forge.surfaces.playwright_driver import PlaywrightDriver
+from capability_forge.surfaces.playwright_driver import CheckpointNotReachedError, PlaywrightDriver
 from capability_forge.utils.evidence import EvidenceWriter
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "hostile_legacy_page.html"
@@ -35,7 +36,7 @@ LOGIN_STEPS = [
 ]
 
 
-def artifact(target_base_url, steps, checkpoint, expected_outcome_type="success", business_outcome_reason=None, inputs=None, outputs=None, checkpoint_extract=None):
+def artifact(target_base_url, steps, checkpoint, expected_outcome_type="success", business_outcome_reason=None, inputs=None, outputs=None, checkpoint_extract=None, risk_summary=None):
     return CapabilityArtifact(
         artifact_id="test_artifact",
         schema_version="1.0",
@@ -45,7 +46,7 @@ def artifact(target_base_url, steps, checkpoint, expected_outcome_type="success"
         outputs=outputs or [],
         steps=steps,
         checkpoint=checkpoint,
-        risk_summary="safe",
+        risk_summary=risk_summary or ("contains_risky_steps" if any(s.risk == "risky_irreversible" for s in steps) else "safe"),
         expected_outcome_type=expected_outcome_type,
         business_outcome_reason=business_outcome_reason,
     )
@@ -349,3 +350,168 @@ def test_evidence_writer_registers_typed_values_as_secrets_before_dispatch(drive
 
     assert "jdoe" in writer._secret_values
     assert "secret" in writer._secret_values
+
+
+# --- escalation: risky steps require confirmation ------------------------------------------------
+
+
+def fake_console(decision, notes=""):
+    return lambda trigger: OperatorDecision(decision=decision, notes=notes)
+
+
+def test_risky_step_without_confirmation_or_escalation_manager_fails_closed(driver, guardrail, fixture_server):
+    # No confirm_risky, no EscalationManager - nobody to ask, so the step must never execute.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [step("s1", "click", [locator(value='role=button[name="Login"]')], None, "Click login", risk="risky_irreversible")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=alert[name="User Name and Password are both required."]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+
+    result = ReplayEngine(driver, guardrail).run(art)
+
+    assert result.status == "hard_failure"
+    assert result.failed_step_id == "s1"
+    assert "confirm_risky" in result.observed_state
+
+
+def test_risky_step_proceeds_when_confirm_risky_is_true_with_no_escalation_manager(driver, guardrail, fixture_server):
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [step("s1", "click", [locator(value='role=button[name="Login"]')], None, "Click login", risk="risky_irreversible")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=alert[name="User Name and Password are both required."]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+
+    result = ReplayEngine(driver, guardrail).run(art, confirm_risky=True)
+
+    assert result.status == "success"
+
+
+def test_risky_step_confirmed_by_operator_proceeds_and_records_the_handoff(driver, guardrail, fixture_server, tmp_path):
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [step("s1", "click", [locator(value='role=button[name="Login"]')], None, "Click login", risk="risky_irreversible")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=alert[name="User Name and Password are both required."]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+    writer = EvidenceWriter(run_id="test_risky_confirmed", mode="replay", root=tmp_path)
+    escalation = EscalationManager(run_id="test_risky_confirmed", operator_console=fake_console("resume", "confirmed, go ahead"), evidence_writer=writer)
+
+    result = ReplayEngine(driver, guardrail, evidence_writer=writer, escalation_manager=escalation).run(art)
+
+    assert result.status == "success"
+    handoffs = [json.loads(line) for line in (writer.run_dir / "handoffs.jsonl").read_text().splitlines()]
+    assert len(handoffs) == 1
+    assert handoffs[0]["reason"] == "risky_step_confirmation"
+    assert handoffs[0]["decision"] == "resume"
+
+
+def test_risky_step_declined_by_operator_ends_in_hard_failure(driver, guardrail, fixture_server):
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [step("s1", "click", [locator(value='role=button[name="Login"]')], None, "Click login", risk="risky_irreversible")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=alert[name="User Name and Password are both required."]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+    escalation = EscalationManager(run_id="test_risky_declined", operator_console=fake_console("abort", "not authorized"))
+
+    result = ReplayEngine(driver, guardrail, escalation_manager=escalation).run(art)
+
+    assert result.status == "hard_failure"
+    assert result.failed_step_id == "s1"
+    assert "not authorized" in result.observed_state
+
+
+# --- escalation: a hard_failure step can be rescued by a human ------------------------------------
+
+
+class _FlakyOnce:
+    """Wraps a real driver so its very first act() call raises, and every call after that
+    delegates normally - simulates "a human fixed something live in the browser" without needing
+    an actual human, so the retry-after-escalation path is testable deterministically. Mirrors how
+    this project already fakes the LLM client in agent_loop tests: the one non-deterministic piece
+    is stubbed, everything else (the real browser, the real driver logic) stays real."""
+
+    def __init__(self, real_driver):
+        self._real = real_driver
+        self.act_calls = 0
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def act(self, step, params=None):
+        self.act_calls += 1
+        if self.act_calls == 1:
+            raise RuntimeError("simulated failure - a human needs to look at this")
+        return self._real.act(step, params)
+
+
+def test_hard_failure_step_resumed_by_operator_is_retried_and_can_succeed(driver, guardrail, fixture_server):
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    flaky_driver = _FlakyOnce(driver)
+    steps = [step("s1", "click", [locator(value='role=button[name="Login"]')], None, "Click login")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=alert[name="User Name and Password are both required."]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+    escalation = EscalationManager(run_id="test_retry", operator_console=fake_console("resume", "clicked it myself"))
+
+    result = ReplayEngine(flaky_driver, guardrail, escalation_manager=escalation).run(art)
+
+    assert result.status == "success"
+    assert flaky_driver.act_calls == 2  # the original attempt, then exactly one retry
+
+
+def test_hard_failure_step_still_failing_after_resume_reports_hard_failure_not_an_infinite_loop(driver, guardrail, fixture_server):
+    # The retry budget is exactly one extra attempt, never a loop - if the step is still broken
+    # after a human had a chance to intervene, that's a real hard_failure.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [step("s1", "click", [locator(value='role=button[name="Does Not Exist"]')], None, "Click nonexistent button")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=heading[name="First Fidelity Member Services - Internal Portal"]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+    calls = []
+
+    def counting_console(trigger):
+        calls.append(trigger)
+        return OperatorDecision(decision="resume", notes="tried, but it's really not there")
+
+    escalation = EscalationManager(run_id="test_no_infinite_retry", operator_console=counting_console)
+
+    result = ReplayEngine(driver, guardrail, escalation_manager=escalation).run(art)
+
+    assert result.status == "hard_failure"
+    assert result.failed_step_id == "s1"
+    assert len(calls) == 1  # escalated exactly once, not once per retry attempt
+
+
+def test_hard_failure_step_aborted_by_operator_ends_the_run(driver, guardrail, fixture_server):
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    steps = [step("s1", "click", [locator(value='role=button[name="Does Not Exist"]')], None, "Click nonexistent button")]
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=heading[name="First Fidelity Member Services - Internal Portal"]'), extract=None)
+    art = artifact(target, steps, checkpoint)
+    escalation = EscalationManager(run_id="test_abort", operator_console=fake_console("abort", "genuinely broken, giving up"))
+
+    result = ReplayEngine(driver, guardrail, escalation_manager=escalation).run(art)
+
+    assert result.status == "hard_failure"
+    assert result.failed_step_id == "s1"
+
+
+def test_hard_failure_checkpoint_resumed_by_operator_is_retried(driver, guardrail, fixture_server):
+    # Same one-retry pattern as a step failure, but for the checkpoint itself never resolving.
+    class FlakyCheckpoint:
+        def __init__(self, real_driver):
+            self._real = real_driver
+            self.verify_calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def verify_checkpoint(self, checkpoint):
+            self.verify_calls += 1
+            if self.verify_calls == 1:
+                raise CheckpointNotReachedError("simulated - not visible yet")
+            return self._real.verify_checkpoint(checkpoint)
+
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    flaky_driver = FlakyCheckpoint(driver)
+    checkpoint = Checkpoint(description="x", locator=locator(value='role=heading[name="First Fidelity Member Services - Internal Portal"]'), extract=None)
+    steps = [step("s1", "wait", [locator(value='role=heading[name="First Fidelity Member Services - Internal Portal"]')], None, "Wait for the page to load")]
+    art = artifact(target, steps, checkpoint)
+    escalation = EscalationManager(run_id="test_checkpoint_retry", operator_console=fake_console("resume"))
+
+    result = ReplayEngine(flaky_driver, guardrail, escalation_manager=escalation).run(art)
+
+    assert result.status == "success"
+    assert flaky_driver.verify_calls == 2
