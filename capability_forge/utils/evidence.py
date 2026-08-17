@@ -1,4 +1,4 @@
-"""Evidence writer for discovery (and, later, replay) runs.
+"""Evidence writer for discovery and replay runs.
 
 Writes the per-run evidence bundle to evidence/<run_id>/:
   - log.jsonl: one redacted JSON object per step (run_id, mode, step_id, timestamp,
@@ -8,6 +8,13 @@ Writes the per-run evidence bundle to evidence/<run_id>/:
     the value sidesteps ever needing to redact free-text input by content.
   - screenshots/step_<n>.png: one per step, referenced from that step's log line.
   - transcript.json: the raw LLM message history for the run, redacted before writing.
+  - handoffs.jsonl: one redacted JSON object per completed human-in-the-loop escalation
+    (escalation/manager.py's HandoffRecord). Kept as its own file rather than folded into
+    log.jsonl: a handoff is a control-transfer record (who took control, what they decided, what
+    they said they did), not a step outcome, and forcing it into log.jsonl's outcome_type enum
+    (success | business_outcome | recoverable | hard_failure) would either stretch that enum to
+    cover a fifth, structurally different kind of event or lose the handoff-specific fields
+    (decision, notes, taken_at/released_at) that don't map onto a step's fields at all.
 
 Two independent redaction layers, deliberately not just one:
   - Field-name redaction (redact(), from utils/redact.py): masks a value whose *key* matches a
@@ -30,11 +37,16 @@ shouldn't touch disk) simply doesn't construct one - nothing in AgentLoop requir
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from capability_forge.utils.redact import DEFAULT_SENSITIVE_FIELDS, redact
+
+if TYPE_CHECKING:
+    # Only for the log_handoff() type hint - a real import would be circular, since
+    # escalation/manager.py itself imports EvidenceWriter from this module.
+    from capability_forge.escalation.manager import HandoffRecord
 
 DEFAULT_EVIDENCE_ROOT = Path("evidence")
 
@@ -123,6 +135,17 @@ class EvidenceWriter:
         scrubbed_line = self._scrub_secrets(line)
         redacted_line = redact(scrubbed_line, self.sensitive_fields)
         with self._log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(redacted_line) + "\n")
+
+    def log_handoff(self, record: "HandoffRecord") -> None:
+        """Append one redacted JSON line to handoffs.jsonl for a completed human-in-the-loop
+        escalation. See the module docstring for why this is a separate file from log.jsonl rather
+        than another outcome_type value."""
+        line = asdict(record)
+        scrubbed_line = self._scrub_secrets(line)
+        redacted_line = redact(scrubbed_line, self.sensitive_fields)
+        handoff_path = self.run_dir / "handoffs.jsonl"
+        with handoff_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(redacted_line) + "\n")
 
     def save_screenshot(self, page: Any) -> str:
