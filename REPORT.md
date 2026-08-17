@@ -32,11 +32,15 @@ escalate - a real cost, accepted because it's what makes a mid-run handoff actua
 than just be designed for.
 
 The `PlaywrightDriver` implementation confirmed that seam under real use rather than leaving it
-theoretical: a locator tier only counts as resolved if it matches exactly one element (ambiguous
-forces fallback, not a guess - proven by a fixture whose `.btn` class is deliberately reused
-across every button); `observe()` must descend into every iframe explicitly or the model is blind
-to a flow living inside one; and `role=alert[name=...]` needed a looser fallback because ARIA's
-accessible-name computation doesn't cover live regions the way it covers buttons and headings.
+theoretical:
+
+- A locator tier only counts as resolved if it matches exactly one element - ambiguous forces
+  fallback, not a guess, proven by a fixture whose `.btn` class is deliberately reused across
+  every button.
+- `observe()` must descend into every iframe explicitly, or the model is blind to a flow living
+  inside one.
+- `role=alert[name=...]` needed a looser fallback, since ARIA's accessible-name computation
+  doesn't cover live regions the way it covers buttons and headings.
 
 ## Artifact schema
 
@@ -73,11 +77,14 @@ recoverable_then_success | hard_failure`. `recoverable_then_success` is replay's
 automatic recovery without an LLM - a step that needed a later locator tier than the one it was
 recorded with, but still resolved.
 
-"Recoverable" names three genuinely different mechanisms, unified only by convenience: discovery's
-interstitial/retry handling (prose-level guidance to the model), discovery's own evidence log (a
-dispatched-but-unrecorded attempt, retried by the LLM), and replay's locator-tier fallback. Replay
-only ever produces the third, since it has no LLM to improvise the other two - stated explicitly
-in `outcome_classifier.py`'s own docstring rather than left to imply replay can detect
+"Recoverable" names three genuinely different mechanisms, unified only by convenience:
+
+- Discovery's interstitial/retry handling - prose-level guidance to the model.
+- Discovery's own evidence log - a dispatched-but-unrecorded attempt, retried by the LLM.
+- Replay's locator-tier fallback.
+
+Replay only ever produces the third, since it has no LLM to improvise the other two - stated
+explicitly in `outcome_classifier.py`'s own docstring rather than left to imply replay can detect
 interstitials, which it structurally cannot.
 
 Real, checked-in evidence for the taxonomy: `evidence/replay_1786951099/` (plain success),
@@ -100,6 +107,18 @@ desktop driver slots in without a schema change; and `TargetSpec` separates rout
 `tenant_overrides`) from the flow definition (`steps`), so a base artifact plus a per-tenant
 override map could cover multiple tenants of one vendor product without a full re-recording.
 Neither `tenant_overrides` application nor a second driver is built - naming the gap plainly.
+
+Drift detection would build on data already collected, not need new instrumentation: every step
+already records which `locator_tier_used` it actually resolved through (`ReplayResult.steps`, and
+`evidence/*/log.jsonl` when evidence is enabled), so which tier a step resolved through is never
+lost per run. What's missing is aggregation of that signal *across* runs - `ReliabilityInfo`
+intentionally collapses to one pass/fail number (`reliability.py`'s own docstring explains why),
+discarding per-step tier detail rather than trending it. A capability whose tier-1 (role)
+resolution rate degrades over successive runs - falling back to tier 2 or 3 more often - is a
+concrete drift signal a monitoring layer could threshold and alert on; the raw per-run detail to
+compute that trend already exists in `StabilityCheckResult.runs`, but nothing aggregates or
+thresholds it today. Building that aggregation is the natural next step, not attempted now, per
+the same "don't build scaling infrastructure prematurely" scope call as the rest of this section.
 
 ## Escalation & handoff
 
@@ -125,11 +144,13 @@ reproducibility; everything else is the same production code path a live invocat
 
 ## Safety
 
-Three layers wrap every action in both modes: an allowlist (domain + action type, checked before
-every `act()` call), risk classification (the model self-tags `safe_reversible` /
-`risky_irreversible`; a keyword heuristic can only escalate that tag, never downgrade it), and
-redaction (field-name matching plus a second, value-based layer - `register_secret()` - added
-after a real incident, described below).
+Three layers wrap every action in both modes:
+
+- **Allowlist** - domain + action type, checked before every `act()` call.
+- **Risk classification** - the model self-tags `safe_reversible` / `risky_irreversible`; a
+  keyword heuristic can only escalate that tag, never downgrade it.
+- **Redaction** - field-name matching plus a second, value-based layer (`register_secret()`),
+  added after a real incident, described below.
 
 Known limitations, stated plainly rather than implied to be fully covered:
 
