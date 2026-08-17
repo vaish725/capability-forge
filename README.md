@@ -9,7 +9,22 @@ a human, and resumes once they're done.
 Guardrails (allowlist, risk classification, redaction) apply to every action in both discovery and
 replay.
 
-See `REPORT.md` for the architecture, schema rationale, and safety write-up.
+See `REPORT.md` for the schema rationale and safety write-up.
+
+## Architecture
+
+One process, two modes sharing one artifact contract and one core:
+
+```
+                       CLI / thin API
+     DISCOVERY (LLM in the loop)      REPLAY (no LLM, deterministic)
+     goal + target URL                artifact + params
+     observe -> decide -> act         step executor (locator tiers, checkpoint)
+     artifact recorder                outcome classifier
+     -> /artifacts/*.json             -> /evidence/ (log, screenshots)
+              \_____________ Escalation Manager (shared) _____________/
+                     \___ Guardrails: allowlist + risk + redaction ___/
+```
 
 ## Status
 
@@ -120,15 +135,21 @@ mismatch 400s.
 
 Every claim above has a real, checked-in example backing it, not just a description:
 
-- **Discovery success** - `evidence/discovery_1786935840/` (log, screenshots, redacted transcript).
-- **Replay success** - `evidence/replay_1786951099/`, produced by the exact replay command above.
+- **Discovery success against the live target (ParaBank)** - `evidence/discovery_1786935840/`
+  (log, screenshots, redacted transcript). This is the assignment's required live discovery run,
+  and also the fresh, clean run recorded after the credential-leak fix described in `REPORT.md`'s
+  Safety section - it's the artifact proving that fix actually works, not just the writeup's word
+  for it.
+- **Replay success** - `evidence/replay_1786951099/`, produced by the exact replay command above,
+  against the bundled fixture.
 - **Replay hard_failure** - `evidence/replay_1786951120/`, produced by the exact `member_id=00000`
   command above - `screenshots/step_06.png` shows the actual SYS-500 error state at the point of
   failure.
 - **Escalation firing end to end** (a run that gets stuck, pauses, a human resumes it, and it goes
-  on to complete the goal) - `evidence/discovery_1786949371/`, including a `handoffs.jsonl`
-  showing the recorded decision. See `scripts/generate_escalation_demo_evidence.py` for exactly
-  what's real versus scripted about that one.
+  on to complete the goal) - `evidence/discovery_1786949371/`, against the bundled fixture,
+  including a `handoffs.jsonl` showing the recorded decision. See
+  `scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about
+  that one.
 
 ## Folder structure
 
