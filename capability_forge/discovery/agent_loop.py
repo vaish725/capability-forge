@@ -329,12 +329,22 @@ class AgentLoop:
             if result.extract_entry is not None:
                 extract_log.append(result.extract_entry)
 
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": block.id, "content": result.tool_result_text}],
-                }
-            )
+            # Every tool_use block in the assistant's turn needs a matching tool_result in the
+            # next message, or the API rejects the following request outright - confirmed against
+            # the real API, not something the scripted-client tests exercise, since Claude
+            # sometimes proposes more than one tool call in a single turn even though only the
+            # first is ever acted on here. The unexecuted ones get a placeholder result so Claude
+            # knows to reissue them next turn instead of assuming they ran.
+            tool_results = [{"type": "tool_result", "tool_use_id": block.id, "content": result.tool_result_text}]
+            for extra_block in tool_use_blocks[1:]:
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": extra_block.id,
+                        "content": "Not executed: only one tool call is processed per turn. Re-propose this if still needed, after seeing the result of the first.",
+                    }
+                )
+            messages.append({"role": "user", "content": tool_results})
 
         return finish(stop_reason="max_steps_exceeded")
 

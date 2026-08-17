@@ -120,6 +120,48 @@ def test_full_success_run_records_steps_and_verified_checkpoint(driver, guardrai
     assert len(client.calls) == 6
 
 
+def test_parallel_tool_use_in_one_turn_still_gets_a_tool_result_for_every_block(driver, guardrail, fixture_server):
+    # Found against the real API, not this scripted client: Claude can propose more than one
+    # tool_use block in a single turn even though only the first is ever acted on. Every tool_use
+    # id in a turn needs a matching tool_result in the next message or the API rejects the
+    # following request outright ("tool_use ids were found without tool_result blocks"). This
+    # reproduces that shape with a scripted client so it's caught without spending API credits.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    responses = [
+        ScriptedMessage(
+            [
+                tool_use("type", {"role": "textbox", "name": "User Name:", "value": "jdoe", "risk": "safe_reversible", "reasoning": "log in"}, "t1"),
+                tool_use("type", {"role": "textbox", "name": "Password:", "value": "secret", "risk": "safe_reversible", "reasoning": "log in, parallel proposal"}, "t2"),
+            ]
+        ),
+        ScriptedMessage([tool_use("type", {"role": "textbox", "name": "Password:", "value": "secret", "risk": "safe_reversible", "reasoning": "log in"}, "t3")]),
+        ScriptedMessage([tool_use("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit login"}, "t4")]),
+        ScriptedMessage(
+            [
+                tool_use(
+                    "done",
+                    {"outcome_type": "success", "checkpoint_role": "textbox", "checkpoint_name": "Member ID:", "summary": "Reached the search screen."},
+                    "t5",
+                )
+            ]
+        ),
+    ]
+    agent, client = loop(driver, guardrail, responses)
+    result = agent.run("Log in", target)
+
+    assert result.stop_reason == "goal_complete"
+    # Only the first tool_use of the two-block turn was acted on and recorded.
+    assert [s.action_type for s in result.steps] == ["type", "type", "click"]
+
+    # The message sent right after the two-block turn must carry a tool_result for both t1 and t2,
+    # not just the one that was executed - otherwise the real API would reject this request. It's
+    # the second-to-last message of the second call (the last is that turn's fresh observation).
+    second_call_messages = client.calls[1]["messages"]
+    tool_result_message = second_call_messages[-2]
+    result_ids = {block["tool_use_id"] for block in tool_result_message["content"]}
+    assert result_ids == {"t1", "t2"}
+
+
 # --- business outcome: an expected, non-error terminal result -----------------------------------
 
 
