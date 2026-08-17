@@ -36,7 +36,20 @@ import anthropic
 
 from capability_forge.guardrails.policy import Guardrail, PolicyViolation
 from capability_forge.schema.artifact import Checkpoint, LocatorTier, StepAction
-from capability_forge.surfaces.playwright_driver import LocatorResolutionError, PlaywrightDriver
+from capability_forge.surfaces.playwright_driver import LocatorResolutionError, PlaywrightDriver, role_name_selector
+from capability_forge.utils.evidence import EvidenceWriter
+
+# Maps a run's terminal stop_reason to the outcome_type vocabulary evidence log lines use
+# (success | business_outcome | recoverable | hard_failure). give_up and the guard-triggered stops
+# all mean the goal was not reached without a named business reason, so they're all hard_failure.
+_STOP_REASON_TO_OUTCOME_TYPE = {
+    "goal_complete": "success",
+    "business_outcome": "business_outcome",
+    "give_up": "hard_failure",
+    "max_steps_exceeded": "hard_failure",
+    "timeout_exceeded": "hard_failure",
+    "dead_end_detected": "hard_failure",
+}
 
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_STEPS = 25
@@ -75,7 +88,15 @@ _RISK_PROPERTY = {
 }
 _ELEMENT_TARGET_PROPERTIES = {
     "role": {"type": "string", "description": "The element's ARIA role, exactly as shown in the accessibility tree (e.g. 'button', 'textbox')."},
-    "name": {"type": "string", "description": "The element's accessible name, exactly as shown in the accessibility tree."},
+    "name": {"type": "string", "description": "The element's accessible name, exactly as shown in the accessibility tree. Use an empty string if the element has no name (shown as a bare role with nothing after it)."},
+    "nth": {
+        "type": "integer",
+        "description": (
+            "Only needed if multiple elements share the exact same role and name (or both lack a "
+            "name) - the 0-based index of the one you mean, counting in the order they appear in "
+            "the accessibility tree above. Omit this entirely when role+name is already unique."
+        ),
+    },
     "reasoning": {"type": "string", "description": "One sentence: why this action moves toward the goal."},
 }
 
@@ -166,7 +187,11 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Required if outcome_type is business_outcome: a short snake_case name, e.g. 'member_not_found'.",
                 },
                 "checkpoint_role": {"type": "string", "description": "ARIA role of the element proving this terminal state was reached."},
-                "checkpoint_name": {"type": "string", "description": "Accessible name of that element."},
+                "checkpoint_name": {"type": "string", "description": "Accessible name of that element. Empty string if it has no name."},
+                "checkpoint_nth": {
+                    "type": "integer",
+                    "description": "Only needed if multiple elements share this exact role and name - see the same field on click/type/select.",
+                },
                 "summary": {"type": "string", "description": "One sentence describing what was accomplished or found."},
             },
             "required": ["outcome_type", "checkpoint_role", "checkpoint_name", "summary"],
@@ -202,6 +227,7 @@ Goal: {goal_description}
 
 Guidance:
 - Read the accessibility tree carefully before each action. Role and name must match what is shown.
+- Some legacy markup gives an element no accessible name at all (shown as a bare role, e.g. "textbox" with nothing after it). Use an empty string for name in that case. If more than one element shares the exact same role and name (including two elements that are both nameless), set nth to the 0-based index of the one you mean, in the order they appear in the tree above - do not guess a name that isn't actually shown.
 - If you encounter an unexpected notice, dialog, or interstitial blocking your path, look for a way to dismiss or continue past it (e.g. a "Continue", "OK", or "Dismiss" button) before giving up. This is often a normal, recoverable part of the flow, not a failure.
 - If the goal cannot be completed because of the specific input you were given (for example, a record genuinely does not exist, or a requested amount exceeds what is available), that is a valid, expected result, not a failure. Call done with outcome_type="business_outcome" and a short business_outcome_reason. Do not retry a business outcome as if it were an error.
 - Only call done with outcome_type="success" once you can point to a specific element (role and name) that proves the goal was actually achieved.
@@ -254,6 +280,7 @@ class AgentLoop:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         repeated_state_limit: int = DEFAULT_REPEATED_STATE_LIMIT,
         max_tree_chars: int = DEFAULT_MAX_TREE_CHARS,
+        evidence_writer: EvidenceWriter | None = None,
     ):
         self.driver = driver
         self.guardrail = guardrail
@@ -263,6 +290,11 @@ class AgentLoop:
         self.timeout_seconds = timeout_seconds
         self.repeated_state_limit = repeated_state_limit
         self.max_tree_chars = max_tree_chars
+        # Optional: when set, every dispatched tool call is appended to evidence/<run_id>/log.jsonl
+        # with a screenshot, and the full message history is saved to transcript.json at the end.
+        # None (the default) means no disk writes at all - the scripted-client test suite never
+        # sets this, so it stays fast and doesn't litter the repo with test evidence.
+        self.evidence_writer = evidence_writer
 
     def run(self, goal_description: str, target_url: str) -> DiscoveryRun:
         steps: list[StepAction] = []
@@ -277,6 +309,18 @@ class AgentLoop:
         self.driver.page.goto(target_url)
 
         def finish(**kwargs: Any) -> DiscoveryRun:
+            if self.evidence_writer is not None:
+                self.evidence_writer.save_transcript(messages)
+                stop_reason = kwargs.get("stop_reason")
+                self.evidence_writer.log_step(
+                    step_id="terminal",
+                    action_attempted=f"done(stop_reason={stop_reason})",
+                    locator_tier_used=None,
+                    expected_state=goal_description,
+                    observed_state=kwargs.get("summary") or kwargs.get("business_outcome_reason") or "",
+                    outcome_type=_STOP_REASON_TO_OUTCOME_TYPE.get(stop_reason, "hard_failure"),
+                    duration_ms=int((time.monotonic() - start_time) * 1000),
+                )
             return DiscoveryRun(
                 goal_description=goal_description,
                 target_url=target_url,
@@ -314,7 +358,9 @@ class AgentLoop:
                 continue
 
             block = tool_use_blocks[0]  # only the first tool call per turn is acted on
+            step_start = time.monotonic()
             result = self._dispatch_tool_call(block.name, block.input, target_url, len(steps) + 1)
+            duration_ms = int((time.monotonic() - step_start) * 1000)
 
             if result.stop_reason is not None:
                 return finish(
@@ -328,6 +374,29 @@ class AgentLoop:
                 steps.append(result.recorded_step)
             if result.extract_entry is not None:
                 extract_log.append(result.extract_entry)
+
+            if self.evidence_writer is not None:
+                screenshot_ref = self.evidence_writer.save_screenshot(self.driver.page)
+                self.evidence_writer.log_step(
+                    step_id=result.recorded_step.step_id if result.recorded_step else f"attempt_{len(steps) + 1}",
+                    action_attempted=f"{block.name}(role={block.input.get('role', '')},name={block.input.get('name', '')})",
+                    # navigate steps carry an empty locators list by design (no element to locate)
+                    # - guard the index rather than assume every recorded step has at least one.
+                    locator_tier_used=(
+                        result.recorded_step.locators[0].strategy
+                        if result.recorded_step and result.recorded_step.locators
+                        else None
+                    ),
+                    expected_state=block.input.get("reasoning", ""),
+                    observed_state=result.tool_result_text,
+                    # A dispatched action that wasn't recorded as a step (blocked by policy, or a
+                    # locator that didn't resolve) isn't a run-ending hard_failure - the loop just
+                    # asked Claude to try again - so it's logged as recoverable, not hard_failure,
+                    # which the schema reserves for a run-ending state (see the mapping above).
+                    outcome_type="success" if result.recorded_step is not None else "recoverable",
+                    duration_ms=duration_ms,
+                    evidence_ref=screenshot_ref,
+                )
 
             # Every tool_use block in the assistant's turn needs a matching tool_result in the
             # next message, or the API rejects the following request outright - confirmed against
@@ -364,6 +433,7 @@ class AgentLoop:
     def _handle_element_action(self, action_type: str, tool_input: dict[str, Any], target_url: str, step_number: int) -> _ToolDispatchResult:
         role = tool_input.get("role", "")
         name = tool_input.get("name", "")
+        nth = tool_input.get("nth")
         value = tool_input.get("value")
         model_risk_tag = tool_input.get("risk", "safe_reversible")
 
@@ -373,12 +443,14 @@ class AgentLoop:
             return _ToolDispatchResult(tool_result_text=f"Blocked by policy: {exc}")
 
         try:
-            locators = self.driver.build_locator_tiers(role, name)
+            locators = self.driver.build_locator_tiers(role, name, nth)
         except LocatorResolutionError:
             return _ToolDispatchResult(
                 tool_result_text=(
-                    f"Could not find an element with role={role!r} name={name!r}. "
-                    "Check the accessibility tree and try again with an exact match."
+                    f"Could not find an element with role={role!r} name={name!r} nth={nth!r}. "
+                    "Check the accessibility tree and try again with an exact match - if the "
+                    "element has no name, use an empty string, and set nth if it shares its "
+                    "role+name with another element."
                 )
             )
 
@@ -425,9 +497,10 @@ class AgentLoop:
     def _handle_extract(self, tool_input: dict[str, Any]) -> _ToolDispatchResult:
         role = tool_input.get("role", "")
         name = tool_input.get("name", "")
-        locator = self.driver.resolve_role_name(role, name)
+        nth = tool_input.get("nth")
+        locator = self.driver.resolve_role_name(role, name, nth)
         if locator is None:
-            return _ToolDispatchResult(tool_result_text=f"Could not find an element with role={role!r} name={name!r} to extract.")
+            return _ToolDispatchResult(tool_result_text=f"Could not find an element with role={role!r} name={name!r} nth={nth!r} to extract.")
         value = locator.inner_text()
         return _ToolDispatchResult(
             extract_entry={"role": role, "name": name, "value": value},
@@ -437,6 +510,7 @@ class AgentLoop:
     def _handle_done(self, tool_input: dict[str, Any]) -> _ToolDispatchResult:
         checkpoint_role = tool_input.get("checkpoint_role", "")
         checkpoint_name = tool_input.get("checkpoint_name", "")
+        checkpoint_nth = tool_input.get("checkpoint_nth")
         outcome_type = tool_input.get("outcome_type", "success")
         summary = tool_input.get("summary")
         business_outcome_reason = tool_input.get("business_outcome_reason")
@@ -444,20 +518,23 @@ class AgentLoop:
         # Never trust the model's own claim of success - verify the checkpoint element is
         # actually present before accepting the run as complete (design doc Section 4.2: emitted
         # only after a discovery run ends in success and its checkpoint is verified).
-        locator = self.driver.resolve_role_name(checkpoint_role, checkpoint_name)
+        locator = self.driver.resolve_role_name(checkpoint_role, checkpoint_name, checkpoint_nth)
         if locator is None:
             return _ToolDispatchResult(
                 tool_result_text=(
                     f"Could not verify: no element found with role={checkpoint_role!r} "
-                    f"name={checkpoint_name!r}. The goal is not confirmed complete - check the "
-                    "current page, or call give_up if truly stuck."
+                    f"name={checkpoint_name!r} nth={checkpoint_nth!r}. The goal is not confirmed "
+                    "complete - check the current page, or call give_up if truly stuck."
                 )
             )
 
-        role_value = f'role={checkpoint_role}[name="{checkpoint_name}"]'
+        role_value = role_name_selector(checkpoint_role, checkpoint_name, checkpoint_nth)
+        # Same confidence split as build_locator_tiers: an nth-qualified match is positional
+        # rather than name-based, so it's rated slightly lower.
+        confidence = 0.75 if checkpoint_nth is not None else 0.9
         checkpoint = Checkpoint(
             description=summary or "Goal reached",
-            locator=LocatorTier(strategy="role", value=role_value, confidence=0.9),
+            locator=LocatorTier(strategy="role", value=role_value, confidence=confidence),
             extract=None,
         )
         stop_reason: StopReason = "goal_complete" if outcome_type == "success" else "business_outcome"

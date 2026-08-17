@@ -16,6 +16,7 @@ import pytest
 from capability_forge.discovery.agent_loop import AgentLoop, trim_accessibility_tree
 from capability_forge.guardrails.policy import AllowlistPolicy, Guardrail
 from capability_forge.surfaces.playwright_driver import PlaywrightDriver
+from capability_forge.utils.evidence import EvidenceWriter
 from capability_forge.utils.local_server import serve_directory
 
 
@@ -160,6 +161,35 @@ def test_parallel_tool_use_in_one_turn_still_gets_a_tool_result_for_every_block(
     tool_result_message = second_call_messages[-2]
     result_ids = {block["tool_use_id"] for block in tool_result_message["content"]}
     assert result_ids == {"t1", "t2"}
+
+
+def test_navigate_step_with_evidence_writer_does_not_crash_on_empty_locators(driver, guardrail, fixture_server, tmp_path):
+    # Found live against ParaBank, not this scripted client: navigate steps carry an empty
+    # locators list by design (no element to locate), but the evidence-logging code originally
+    # indexed locators[0] unconditionally to determine locator_tier_used, crashing with
+    # IndexError the moment a discovery run's recorded step was a navigate. Reproduced here so
+    # it's caught for free from now on, without spending API credits on it again.
+    target = f"{fixture_server}/hostile_legacy_page.html"
+    other_page = f"{fixture_server}/hostile_legacy_page.html"
+    responses = [
+        ScriptedMessage([tool_use("navigate", {"url": other_page, "reasoning": "reload the page"}, "t1")]),
+        ScriptedMessage(
+            [
+                tool_use(
+                    "done",
+                    {"outcome_type": "success", "checkpoint_role": "button", "checkpoint_name": "Login", "summary": "Reloaded."},
+                    "t2",
+                )
+            ]
+        ),
+    ]
+    writer = EvidenceWriter(run_id="test_navigate_run", mode="discovery", root=tmp_path)
+    agent, client = loop(driver, guardrail, responses, evidence_writer=writer)
+    result = agent.run("Reload the page", target)
+
+    assert result.stop_reason == "goal_complete"
+    assert result.steps[0].action_type == "navigate"
+    assert result.steps[0].locators == []
 
 
 # --- business outcome: an expected, non-error terminal result -----------------------------------

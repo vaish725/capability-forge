@@ -19,6 +19,7 @@ from playwright.sync_api import sync_playwright
 from capability_forge.discovery.agent_loop import AgentLoop
 from capability_forge.guardrails.policy import Guardrail
 from capability_forge.surfaces.playwright_driver import PlaywrightDriver
+from capability_forge.utils.evidence import EvidenceWriter, new_run_id
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -72,11 +73,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.timeout_seconds is not None:
         loop_kwargs["timeout_seconds"] = args.timeout_seconds
 
+    run_id = new_run_id("discovery")
+    evidence_writer = EvidenceWriter(run_id=run_id, mode="discovery", sensitive_fields=set(guardrail.policy.sensitive_fields))
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
         page = browser.new_page()
         driver = PlaywrightDriver(page)
-        agent = AgentLoop(driver, guardrail, **loop_kwargs)
+        agent = AgentLoop(driver, guardrail, evidence_writer=evidence_writer, **loop_kwargs)
         try:
             result = agent.run(args.goal, args.target)
         except anthropic.AnthropicError as exc:
@@ -87,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             browser.close()
 
+    print(f"Evidence written to: {evidence_writer.run_dir}")
     print_result(result)
     return 0
 

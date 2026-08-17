@@ -54,13 +54,17 @@ def test_main_exits_cleanly_without_an_api_key(monkeypatch, capsys):
     assert "ANTHROPIC_API_KEY is not set" in captured.err
 
 
-def test_main_reports_anthropic_api_errors_cleanly(monkeypatch, capsys):
+def test_main_reports_anthropic_api_errors_cleanly(monkeypatch, capsys, tmp_path):
     # Confirms the API-error path exits cleanly (message on stderr, exit code 1) rather than
     # letting a raw SDK traceback surface - without needing a real browser or a real API call.
     # Stubs sync_playwright (browser launch) and AgentLoop (the thing that would raise) at the
     # points discover.py actually imports them.
     monkeypatch.setattr("capability_forge.discover.load_dotenv", lambda: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-for-this-test")
+    # main() also constructs a real EvidenceWriter before touching the browser at all - redirect
+    # its root to a pytest tmp_path so this test doesn't leave a directory under the repo's real
+    # evidence/ folder behind every time it runs.
+    monkeypatch.setattr("capability_forge.utils.evidence.DEFAULT_EVIDENCE_ROOT", tmp_path)
 
     class _FakePage:
         pass
