@@ -5,6 +5,8 @@ docstring)."""
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from capability_forge.utils.evidence import EvidenceWriter, new_run_id
 
 
@@ -207,3 +209,34 @@ def test_register_secret_scrubs_longest_match_first(tmp_path):
     writer.save_transcript(messages)
     saved = json.loads((writer.run_dir / "transcript.json").read_text())
     assert saved[0]["content"] == "account [REDACTED_INPUT] balance"
+
+
+# The real leak was in a plain-string observation, but the whole point of register_secret() is
+# that it's field-agnostic - it must catch the value wherever it lands, not just in the one field
+# that happened to leak first. Parametrized over several different locations a secret could appear
+# in a transcript, so the fix's generality is pinned down by a test rather than true by inspection.
+_SECRET_LOCATIONS = {
+    "plain_string_observation": [{"role": "user", "content": "Current page:\n- textbox: {secret}"}],
+    "text_block": [{"role": "assistant", "content": [{"type": "text", "text": "I typed {secret} into the field."}]}],
+    "tool_use_reasoning_field": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "click", "input": {"role": "button", "name": "Go", "reasoning": "Submitting with {secret} entered."}}]}
+    ],
+    "tool_result_content": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Field now reads {secret}."}]}],
+    "nested_list_of_dicts": [{"role": "user", "content": [{"type": "text", "text": "outer", "extra": {"nested": ["deep", "{secret}", {"deeper": "{secret} again"}]}}]}],
+}
+
+
+@pytest.mark.parametrize("location", _SECRET_LOCATIONS, ids=list(_SECRET_LOCATIONS))
+def test_registered_secret_never_survives_regardless_of_where_it_appears(tmp_path, location):
+    writer = make_writer(tmp_path, sensitive_fields=frozenset())
+    secret = "hunter2"
+    writer.register_secret(secret)
+
+    # Substitute the secret into whichever location this case targets - done via string
+    # substitution on a JSON round-trip so the fixture data above stays plain and readable.
+    template = json.dumps(_SECRET_LOCATIONS[location])
+    messages = json.loads(template.replace("{secret}", secret))
+
+    writer.save_transcript(messages)
+    saved_text = (writer.run_dir / "transcript.json").read_text()
+    assert secret not in saved_text, f"secret leaked via location={location!r}"
