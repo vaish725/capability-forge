@@ -104,6 +104,14 @@ def test_click_via_role_tier(driver):
     assert driver.page.locator("#screenAccounts").is_visible()
 
 
+def test_act_returns_the_locator_tier_actually_used(driver):
+    # What the replay engine's outcome classifier needs: not just that the step succeeded, but
+    # which tier it succeeded via, to tell "resolved via the primary tier" apart from "needed a
+    # fallback tier" without duplicating resolution logic itself.
+    tier = driver.act(step(action_type="type", locators=[locator("css", "#txtUserName")], input_value="jdoe"))
+    assert tier == locator("css", "#txtUserName")
+
+
 def test_click_falls_back_to_css_tier_when_role_tier_is_wrong(driver):
     # First tier deliberately references a nonexistent role/name; the driver must fall through to
     # the css tier rather than failing outright.
@@ -116,8 +124,13 @@ def test_click_falls_back_to_css_tier_when_role_tier_is_wrong(driver):
     )
     driver.act(step(action_type="type", locators=[locator("css", "#txtUserName")], input_value="jdoe"))
     driver.act(step(action_type="type", locators=[locator("css", "#txtPassword")], input_value="secret"))
-    driver.act(s)
+    tier = driver.act(s)
     assert driver.page.locator("#screenAccounts").is_visible()
+    # The tier actually reported back is the fallback (css), not the role tier that was listed
+    # first but didn't resolve - confirms the returned tier reflects what actually happened, not
+    # just the step's own first-listed locator.
+    assert tier.strategy == "css"
+    assert tier.value == "#btnLogin"
 
 
 def test_ambiguous_css_tier_is_skipped_in_favor_of_a_later_unique_tier(driver):
@@ -229,9 +242,10 @@ def test_wait_blocks_until_iframe_content_is_actually_ready(driver):
     # processed, before the iframe's srcdoc has necessarily finished loading. The "wait" action
     # must block until .balance-value is really there, not just return immediately.
     search_via_driver(driver, "12345")
-    driver.act(step(action_type="wait", locators=[locator("css", ".balance-value")]))
+    tier = driver.act(step(action_type="wait", locators=[locator("css", ".balance-value")]))
     frame = driver.page.frame_locator("#detailFrame")
     assert frame.locator(".balance-value").inner_text() == "$4500.00"
+    assert tier == locator("css", ".balance-value")
 
 
 def test_wait_via_coordinate_tier_is_unsupported(driver):
@@ -244,8 +258,9 @@ def test_wait_via_coordinate_tier_is_unsupported(driver):
 
 def test_navigate_goes_to_the_resolved_destination(driver):
     s = step(action_type="navigate", locators=[], input_value="data:text/html,<h1>Navigated</h1>")
-    driver.act(s)
+    tier = driver.act(s)
     assert driver.page.locator("h1").inner_text() == "Navigated"
+    assert tier is None  # navigate has no locator involved at all
 
 
 def test_navigate_resolves_template_params(driver):

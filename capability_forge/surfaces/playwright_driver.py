@@ -145,11 +145,16 @@ class PlaywrightDriver:
             accessibility_tree="\n\n".join(sections),
         )
 
-    def act(self, step: StepAction, params: dict[str, str] | None = None) -> None:
+    def act(self, step: StepAction, params: dict[str, str] | None = None) -> LocatorTier | None:
         """Execute one recorded step. params fills in any {{name}} placeholders in
         step.input_value; the schema already guarantees any such placeholder was declared as an
         artifact input, so a KeyError here means that check was skipped upstream, not that the
-        param is legitimately optional."""
+        param is legitimately optional.
+
+        Returns the LocatorTier that was actually used to resolve the target - None for navigate,
+        which has no locator involved at all. This is what lets a caller (the replay engine's
+        outcome classifier) tell "resolved via the primary tier" apart from "needed a fallback
+        tier to succeed" without duplicating the resolution logic itself."""
         try:
             resolved_value = render_template(step.input_value, params or {})
         except KeyError as exc:
@@ -159,7 +164,7 @@ class PlaywrightDriver:
             # navigate has no element to locate - input_value is already the full destination
             # (the schema requires it non-empty for this action type).
             self.page.goto(resolved_value)
-            return
+            return None
 
         if step.action_type == "wait":
             # Resolution itself already waits (see module docstring); "wait" just resolves and
@@ -169,7 +174,7 @@ class PlaywrightDriver:
             target = self._resolve_target(step.locators)
             if target.locator is None:
                 raise ValueError("wait action_type is not supported via the coordinate locator tier")
-            return
+            return target.tier
 
         target = self._resolve_target(step.locators)
         dispatch = {
@@ -178,6 +183,7 @@ class PlaywrightDriver:
             "select": self._select,
         }
         dispatch[step.action_type](target, resolved_value)
+        return target.tier
 
     def verify_checkpoint(self, checkpoint: Checkpoint) -> dict[str, str]:
         """Confirm the checkpoint's locator is present, then read every declared output. Returns
