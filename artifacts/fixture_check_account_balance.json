@@ -109,5 +109,10 @@
   "risk_summary": "safe",
   "expected_outcome_type": "success",
   "business_outcome_reason": null,
-  "reliability": null
+  "reliability": {
+    "pass_rate": 1.0,
+    "avg_duration_ms": 20188.13534141518,
+    "sample_size": 5,
+    "last_checked": "2026-08-17T07:28:54.351030Z"
+  }
 }
