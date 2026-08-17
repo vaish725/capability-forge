@@ -13,32 +13,33 @@ See `REPORT.md` for the architecture, schema rationale, and safety write-up.
 
 ## Status
 
-Feature-complete against the assignment's core requirements plus both Tier 1 stretch goals. Built
-and tested: the capability artifact schema, the guardrail policy
-(allowlist, risk classification, redaction), the Playwright surface driver, the discovery loop,
-per-run evidence capture (step-by-step log, screenshots, redacted transcript, written to
-`evidence/<run_id>/`), the artifact recorder (turns a discovery run into a versioned, parameterized
-`CapabilityArtifact`), the replay engine (executes a saved artifact deterministically, no LLM
-involved, classifies the outcome as success, business_outcome, recoverable_then_success, or
-hard_failure, and writes the same evidence bundle discovery does when given an evidence writer),
-and human-in-the-loop escalation (`escalation/manager.py`): a state machine
-(`AGENT_ACTIVE -> PAUSED_FOR_HUMAN -> HUMAN_ACTIVE -> RESUMING -> AGENT_ACTIVE | DONE`) that hands
-the live browser session to a human via a mock CLI operator console when discovery's dead-end guard
-trips, when a replay step or checkpoint hits a hard failure, or before a risky/irreversible replay
-step runs unconfirmed - and records what the human decided (`handoffs.jsonl`) either way. The
-discovery loop has been run live against both the bundled fixture and ParaBank's public demo
-banking site; a real recorded example is at `artifacts/parabank_check_account_balance.json`. A real
-evidence bundle showing escalation firing end to end (a run that gets stuck, pauses, a human
-resumes it, and it completes the goal) is at `evidence/discovery_1786949371/` - see
-`scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about that
-run. Both discovery and replay have a real CLI entry point (`python -m capability_forge.discover` /
-`python -m capability_forge.replay`, see the demo path below). Both Tier 1 stretch goals from the
-design are also built: multi-run stability (`replay/reliability.py` - replays an artifact N times
-against N independent fresh pages and writes a real `ReliabilityInfo` back onto it) and an
-agent-facing capability API (`api/main.py` - `GET /capabilities` lists every recorded artifact with
-its typed input/output contract and reliability data, `POST /capabilities/{id}/invoke` runs a real
-replay and returns the result). Not attempted: the two Tier 2 stretch-stretch goals (confidence/
-approval gating, cross-tenant canonicalization) - see `REPORT.md`'s Cuts section for why.
+Feature-complete against the assignment's six core requirements, plus both Tier 1 stretch goals.
+
+- **Discovery** - an LLM drives a real browser (Playwright) through an observe-decide-act loop,
+  wrapped in the same guardrail policy (allowlist, risk classification, redaction) that wraps
+  replay, with a dead-end guard against infinite loops.
+- **Capability artifacts** - a discovery run is recorded into a typed, versioned, parameterized
+  `CapabilityArtifact` (`artifact_recorder.py`), with per-run evidence (log, screenshots, redacted
+  transcript) written to `evidence/<run_id>/`.
+- **Replay** - executes a saved artifact deterministically, no LLM involved, classifying the
+  outcome as `success` / `business_outcome` / `recoverable_then_success` / `hard_failure`.
+- **Escalation** (`escalation/manager.py`) - a state machine
+  (`AGENT_ACTIVE -> PAUSED_FOR_HUMAN -> HUMAN_ACTIVE -> RESUMING -> AGENT_ACTIVE | DONE`) hands the
+  live browser session to a human via a CLI operator console when discovery's dead-end guard
+  trips, a replay step or checkpoint hits a hard failure, or a risky/irreversible replay step
+  awaits confirmation - and records what the human decided either way.
+- **Both CLI entry points are real**: `python -m capability_forge.discover` and
+  `python -m capability_forge.replay` (see the demo path below).
+- **Both Tier 1 stretch goals are built**: multi-run stability (`replay/reliability.py`, replays
+  an artifact N times against N independent fresh pages and writes a real `ReliabilityInfo` back
+  onto it) and an agent-facing capability API (`api/main.py` - `GET /capabilities` /
+  `POST /capabilities/{id}/invoke`).
+
+Every one of the above has a real, checked-in example backing it - see Evidence below, not just
+this list. Discovery has been run live against both the bundled fixture and ParaBank's public demo
+banking site (`artifacts/parabank_check_account_balance.json`). Not attempted: the two Tier 2
+stretch-stretch goals (confidence/approval gating, cross-tenant canonicalization) - see
+`REPORT.md`'s Cuts section for why.
 
 ## Setup
 
