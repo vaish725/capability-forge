@@ -3,6 +3,7 @@ fallback (including the ambiguous-match-is-not-a-match rule), frame-awareness fo
 detail view, every action_type, checkpoint verification, and {{param}} templating end to end.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -401,3 +402,27 @@ def test_build_locator_tiers_with_nth_out_of_range_raises(driver):
     driver.page.set_content('<input type="text">')
     with pytest.raises(LocatorResolutionError):
         driver.build_locator_tiers("textbox", "", nth=5)
+
+
+def test_nth_locator_survives_json_round_trip_and_still_replays(driver):
+    # LocatorTier.value is a plain string field - nth is folded into it (a trailing " >> nth=N"),
+    # not a separate schema field. Confirms that's genuinely enough: a step recorded with an
+    # nth-qualified tier, serialized to JSON exactly as artifact.json would, deserialized fresh,
+    # and executed with no discovery-time context left - the same path a real replay takes -
+    # still resolves to the right element and acts on it. Checked directly rather than assumed,
+    # since an artifact recorder with nowhere to put nth would silently lose it.
+    driver.page.set_content('<input type="text" id="a"><input type="text" id="b">')
+    original = StepAction(
+        step_id="step_2",
+        action_type="type",
+        locators=[LocatorTier(strategy="role", value='role=textbox[name=""] >> nth=1', confidence=0.75)],
+        input_value="hunter2",
+        risk="safe_reversible",
+        description="Enter password into the second unnamed textbox",
+    )
+    restored = StepAction.model_validate(json.loads(original.model_dump_json()))
+    assert restored == original
+
+    driver.act(restored)
+    assert driver.page.locator("#b").input_value() == "hunter2"
+    assert driver.page.locator("#a").input_value() == ""
