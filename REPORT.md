@@ -144,10 +144,14 @@ chance to intervene, that's a genuine failure, not something worth asking again.
 What's mocked versus real: the operator console is a CLI prompt (`cli_operator_console`), not a
 live co-browsing UI - the assignment's own scope note permits this. What it drives is real: the
 live browser session (non-headless), the state machine, and the `HandoffRecord` written to
-`handoffs.jsonl`. Evidence at `evidence/discovery_1786949371/`: a run that trips the dead-end
-guard three times, pauses, is resumed, and goes on to actually complete the goal - not a
-pause-then-give-up. Only the LLM's and the operator's decisions are scripted there, for
-reproducibility; everything else is the same production code path a live invocation uses.
+`handoffs.jsonl`. Two real bundles, for the two escalation-bearing trigger conditions: at
+`evidence/discovery_1786949371/`, a run that trips the dead-end guard three times, pauses, is
+resumed, and goes on to actually complete the goal - not a pause-then-give-up (only the LLM's and
+the operator's decisions are scripted there, for reproducibility; everything else is the same
+production code path a live invocation uses). At `evidence/replay_1787003705/`, a `hard_failure`
+escalation run with nothing scripted at all - a real terminal session, paused on a real `input()`
+call, resumed by a real typed decision; `handoffs.jsonl` carries a genuine typo in the notes field
+("clicked on search buttom") that no generator produces.
 
 ## Safety
 

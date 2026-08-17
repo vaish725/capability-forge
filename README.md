@@ -145,11 +145,17 @@ Every claim above has a real, checked-in example backing it, not just a descript
 - **Replay hard_failure** - `evidence/replay_1786951120/`, produced by the exact `member_id=00000`
   command above - `screenshots/step_06.png` shows the actual SYS-500 error state at the point of
   failure.
-- **Escalation firing end to end** (a run that gets stuck, pauses, a human resumes it, and it goes
-  on to complete the goal) - `evidence/discovery_1786949371/`, against the bundled fixture,
-  including a `handoffs.jsonl` showing the recorded decision. See
-  `scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about
-  that one.
+- **Escalation firing end to end** - two different trigger conditions, each with its own real
+  bundle:
+  - Discovery's dead-end guard (a run that gets stuck, pauses, a human resumes it, and it goes on
+    to complete the goal) - `evidence/discovery_1786949371/`, against the bundled fixture. See
+    `scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about
+    that one - only the LLM's and the operator's decisions are scripted, for reproducibility; the
+    state machine and handoff mechanics are the same production path a live run uses.
+  - Replay's `hard_failure` trigger, fully live and unscripted - `evidence/replay_1787003705/`,
+    produced by the exact `member_id=00000` command above, responded to by hand at a real
+    terminal prompt. Nothing about this one is scripted: `handoffs.jsonl` has a real timestamped
+    decision (`resume`), with a genuine typo in the notes field no generator would produce.
 
 ## Folder structure
 

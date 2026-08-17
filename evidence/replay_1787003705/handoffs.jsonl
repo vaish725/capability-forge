@@ -1,0 +1,1 @@
+{"run_id": "replay_1787003705", "reason": "hard_failure", "step_id": "checkpoint", "description": "Checkpoint not reached: checkpoint locator not found: 'role=cell[name=\"$4500.00\"]'", "decision": "resume", "notes": "clicked on search buttom", "taken_at": "2026-08-17T21:55:47Z", "released_at": "2026-08-17T21:56:36Z"}
