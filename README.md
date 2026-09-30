@@ -102,7 +102,8 @@ prompt; `--no-escalation` and `--no-evidence` behave the same way they do for di
 non-zero on `hard_failure`, so it's usable as a scripted health check. `artifacts/parabank_check_account_balance.json`
 is a second real example recorded against ParaBank's live demo site instead of the bundled
 fixture - replaying it needs live network access to parabank.parasoft.com, so it isn't part of this
-fully-offline demo path.
+fully-offline demo path. It takes the ParaBank login as inputs, passed the same way:
+`--params '{"username": "...", "password": "..."}'` (never via `.env`).
 
 To see the hard_failure path for real, replay the same artifact with `--params '{"member_id": "00000"}'`
 instead - `00000` is the fixture's own deterministic trigger for a simulated backend error

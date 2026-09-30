@@ -140,7 +140,14 @@ def cli_operator_console(trigger: EscalationTrigger) -> OperatorDecision:
         print(f"Screenshot: {trigger.screenshot_ref}")
     print("The live browser window is now yours. Take whatever action is needed, then respond below.")
     while True:
-        raw = input("Type 'resume' to hand control back to the agent, or 'abort' to end the run: ").strip().lower()
+        try:
+            raw = input("Type 'resume' to hand control back to the agent, or 'abort' to end the run: ").strip().lower()
+        except EOFError:
+            # No operator attached (stdin closed or piped, e.g. a script or CI). Nobody can answer,
+            # so abort cleanly rather than crash, and say so in the record so this is never mistaken
+            # for a human's decision.
+            print("\nNo operator input available (stdin closed); aborting the run.")
+            return OperatorDecision(decision="abort", notes="auto-abort: no operator input (stdin closed)")
         if raw in ("resume", "abort"):
             # See the module docstring's note on HandoffRecord.notes: this free text is written to
             # handoffs.jsonl through the same redaction/secret-scrub pipeline as everything else,
@@ -148,7 +155,10 @@ def cli_operator_console(trigger: EscalationTrigger) -> OperatorDecision:
             # (via register_secret()) - it has no way to recognize a brand-new secret the operator
             # types here for the first time. Warned explicitly rather than silently trusting the
             # redaction layer to cover something it structurally cannot.
-            notes = input("Optional note about what you did (blank to skip - do not type passwords or other secrets here, they are not redacted): ").strip()
+            try:
+                notes = input("Optional note about what you did (blank to skip - do not type passwords or other secrets here, they are not redacted): ").strip()
+            except EOFError:
+                notes = ""  # the decision itself was given; a missing optional note is not an error
             return OperatorDecision(decision=raw, notes=notes)  # type: ignore[arg-type]
         print("Please type exactly 'resume' or 'abort'.")
 

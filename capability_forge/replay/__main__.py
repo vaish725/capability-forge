@@ -1,6 +1,6 @@
 """Replay mode CLI entry point.
 
-    python -m capability_forge.replay --artifact artifacts/parabank_check_account_balance.json \\
+    python -m capability_forge.replay --artifact artifacts/fixture_check_account_balance.json \\
         --params '{"member_id": "12345"}'
 
 Wires together a launched Playwright browser, the guardrail policy loaded from

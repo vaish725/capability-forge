@@ -175,3 +175,36 @@ def test_cli_operator_console_warns_against_secrets_in_the_notes_prompt(monkeypa
 
     notes_prompt = prompts[1]
     assert "secret" in notes_prompt.lower() or "password" in notes_prompt.lower()
+
+
+def _eof_input(_prompt):
+    raise EOFError
+
+
+def test_cli_operator_console_aborts_cleanly_when_no_operator_is_attached(monkeypatch, capsys):
+    # stdin closed or piped (a script, CI): nobody can answer, so the console must abort rather
+    # than crash with a traceback, and the note must make clear no human made this decision.
+    monkeypatch.setattr("builtins.input", _eof_input)
+
+    decision = cli_operator_console(trigger())
+
+    assert decision.decision == "abort"
+    assert "no operator input" in decision.notes
+    assert "aborting" in capsys.readouterr().out
+
+
+def test_cli_operator_console_keeps_the_decision_when_only_the_notes_prompt_hits_eof(monkeypatch):
+    responses = iter(["resume"])
+
+    def fake_input(_prompt):
+        try:
+            return next(responses)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    decision = cli_operator_console(trigger())
+
+    assert decision.decision == "resume"
+    assert decision.notes == ""
