@@ -296,6 +296,90 @@ def test_verify_checkpoint_raises_when_locator_never_appears(driver):
         driver.verify_checkpoint(checkpoint)
 
 
+# The value-independent checkpoint shape discovery now records: a label anchor (right screen), an
+# optional input-bound identity (right entity), and outputs located by their label (read value).
+LABEL_ANCHORED_BALANCE = "role=row[name=/^Current Balance:/] >> role=cell >> nth=1"
+
+
+def value_independent_checkpoint(identity=None):
+    return Checkpoint(
+        description="Balance page loaded",
+        locator=locator("role", 'role=cell[name="Current Balance:"]'),
+        identity=identity,
+        extract={"balance": LABEL_ANCHORED_BALANCE},
+    )
+
+
+@pytest.mark.parametrize("member_id,expected_balance", [("12345", "$4500.00"), ("67890", "$250.75")])
+def test_label_anchored_checkpoint_verifies_for_every_member(driver, member_id, expected_balance):
+    # The regression this design exists for: the schema 1.0 checkpoint role=cell[name="$4500.00"]
+    # only ever verified for member 12345.
+    login_via_driver(driver)
+    search_via_driver(driver, member_id)
+    outputs = driver.verify_checkpoint(value_independent_checkpoint(), output_formats={"balance": "currency"})
+    assert outputs == {"balance": expected_balance}
+
+
+def test_verify_checkpoint_identity_is_rendered_with_this_runs_params(driver):
+    login_via_driver(driver)
+    search_via_driver(driver, "67890")
+    checkpoint = value_independent_checkpoint(identity='role=cell[name="{{member_name}}"]')
+    assert driver.verify_checkpoint(checkpoint, params={"member_name": "Robert Smith"}) == {"balance": "$250.75"}
+
+
+def test_verify_checkpoint_fails_when_identity_is_a_different_entity(driver):
+    # Right screen, well-formed value, wrong record: exactly what a presence-only check can't catch.
+    login_via_driver(driver)
+    search_via_driver(driver, "67890")
+    checkpoint = value_independent_checkpoint(identity='role=cell[name="{{member_name}}"]')
+    with pytest.raises(CheckpointNotReachedError, match="identity"):
+        driver.verify_checkpoint(checkpoint, params={"member_name": "Jane Doe"})
+
+
+def test_verify_checkpoint_identity_param_cannot_break_out_of_the_selector(driver):
+    login_via_driver(driver)
+    search_via_driver(driver, "12345")
+    checkpoint = value_independent_checkpoint(identity='role=cell[name="{{member_name}}"]')
+    with pytest.raises(CheckpointNotReachedError):
+        driver.verify_checkpoint(checkpoint, params={"member_name": 'x"] , role=cell[name="Jane Doe'})
+
+
+def test_verify_checkpoint_rejects_a_value_that_does_not_match_its_format(driver):
+    login_via_driver(driver)
+    search_via_driver(driver, "12345")
+    with pytest.raises(CheckpointNotReachedError, match="not a valid integer"):
+        driver.verify_checkpoint(value_independent_checkpoint(), output_formats={"balance": "integer"})
+
+
+def test_derive_value_locator_anchors_on_the_row_label_not_the_value(driver):
+    login_via_driver(driver)
+    search_via_driver(driver, "12345")
+    value_cell = driver.resolve_role_name("cell", "$4500.00")
+    derived = driver.derive_value_locator(value_cell)
+    assert derived == LABEL_ANCHORED_BALANCE
+    assert "4500" not in derived
+
+
+def test_derive_value_locator_result_works_for_a_different_member(driver, page):
+    login_via_driver(driver)
+    search_via_driver(driver, "12345")
+    derived = driver.derive_value_locator(driver.resolve_role_name("cell", "$4500.00"))
+
+    page.goto(FIXTURE_URL)
+    login_via_driver(driver)
+    search_via_driver(driver, "67890")
+    assert driver._find_unique(derived).inner_text() == "$250.75"
+
+
+def test_derive_value_locator_returns_none_without_a_label_or_id(driver):
+    # The login button: no table-row label to anchor on, and the id fallback only applies to the
+    # element's own id, so a button with id still resolves - use the label cell instead, which is
+    # column 0 of its row (it *is* the label) and has no id.
+    login_via_driver(driver)
+    search_via_driver(driver, "12345")
+    assert driver.derive_value_locator(driver.resolve_role_name("cell", "Current Balance:")) is None
+
+
 # --- resolve_role_name / build_locator_tiers: what the discovery loop uses to turn an LLM's -----
 # --- role+name proposal into something the artifact schema and driver can both act on ----------
 

@@ -17,7 +17,11 @@ from capability_forge.schema.artifact import (
     StepAction,
     TargetSpec,
     extract_template_params,
+    output_matches_format,
+    render_selector,
     render_template,
+    selector_contains_literal,
+    selector_literals,
 )
 
 
@@ -546,3 +550,106 @@ def test_saved_file_is_valid_json_with_expected_keys(tmp_path):
     data = json.loads(path.read_text())
     assert data["artifact_id"] == "lookup_member_balance"
     assert data["risk_summary"] == "safe"
+
+
+# --- checkpoint: three jobs, value-independent selectors (schema 1.1) ---------------------------
+
+BALANCE_OUTPUT = {"name": "balance", "type": "string", "description": "Current balance.", "format": "currency", "example": "$4500.00"}
+LABEL_ANCHORED_BALANCE = "role=row[name=/^Current Balance:/] >> role=cell >> nth=1"
+MEMBER_INPUT = {"name": "member_id", "type": "string", "required": True, "description": "Member to look up."}
+
+
+def checkpoint_dict(locator_value='role=cell[name="Current Balance:"]', identity=None, extract=None):
+    return {
+        "description": "Balance shown.",
+        "locator": make_locator(value=locator_value),
+        "identity": identity,
+        "extract": extract if extract is not None else {"balance": LABEL_ANCHORED_BALANCE},
+    }
+
+
+def test_value_independent_checkpoint_accepted():
+    artifact = build(schema_version="1.1", inputs=[MEMBER_INPUT], outputs=[BALANCE_OUTPUT], checkpoint=checkpoint_dict(identity='role=cell[name="{{member_id}}"]'))
+    assert artifact.checkpoint.identity == 'role=cell[name="{{member_id}}"]'
+
+
+def test_checkpoint_locator_containing_an_output_example_rejected():
+    # The exact shape of the schema 1.0 fixture artifact's checkpoint.
+    with pytest.raises(ValidationError, match="only verify while the page shows that exact value"):
+        build(outputs=[BALANCE_OUTPUT], checkpoint=checkpoint_dict(locator_value='role=cell[name="$4500.00"]'))
+
+
+def test_extract_selector_containing_an_output_example_rejected():
+    with pytest.raises(ValidationError, match="exact value"):
+        build(outputs=[BALANCE_OUTPUT], checkpoint=checkpoint_dict(extract={"balance": 'role=cell[name="$4500.00"] >> nth=0'}))
+
+
+def test_value_bound_check_ignores_structural_selector_parts():
+    # An example of "1" must not collide with ">> nth=1", which isn't text the selector matches on.
+    output = {**BALANCE_OUTPUT, "format": "integer", "example": "1"}
+    build(outputs=[output], checkpoint=checkpoint_dict())
+
+
+def test_checkpoint_locator_with_template_param_rejected():
+    with pytest.raises(ValidationError, match="only checkpoint.identity may"):
+        build(inputs=[MEMBER_INPUT], checkpoint=checkpoint_dict(locator_value='role=cell[name="{{member_id}}"]', extract={}), outputs=[])
+
+
+def test_identity_without_any_param_rejected():
+    with pytest.raises(ValidationError, match="must reference at least one declared input"):
+        build(outputs=[BALANCE_OUTPUT], checkpoint=checkpoint_dict(identity='role=heading[name="Account Details"]'))
+
+
+def test_identity_with_undeclared_param_rejected():
+    with pytest.raises(ValidationError, match="undeclared"):
+        build(outputs=[BALANCE_OUTPUT], checkpoint=checkpoint_dict(identity='role=cell[name="{{account_id}}"]'))
+
+
+def test_output_example_must_match_its_own_format():
+    with pytest.raises(ValidationError, match="does not match its own format"):
+        OutputField(name="balance", type="string", description="d", format="currency", example="N/A")
+
+
+def test_schema_1_0_artifacts_without_new_fields_still_load():
+    # The committed ParaBank artifact predates 1.1 and must keep loading until it is re-recorded.
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "artifacts" / "parabank_check_account_balance.json"
+    artifact = CapabilityArtifact.load(path)
+    assert artifact.checkpoint.identity is None
+
+
+@pytest.mark.parametrize(
+    "value,output_format,expected",
+    [
+        ("$4500.00", "currency", True),
+        ("$1,234.56", "currency", True),
+        ("-$100.00", "currency", True),
+        ("$-100.00", "currency", True),
+        ("N/A", "currency", False),
+        ("", "currency", False),
+        ("1,024", "integer", True),
+        ("10.5", "integer", False),
+        ("10.5", "decimal", True),
+        ("2026-10-01", "date", True),
+        ("10/01/2026", "date", True),
+        ("soon", "date", False),
+        ("  Jane Doe ", "text", True),
+        ("   ", "text", False),
+    ],
+)
+def test_output_formats(value, output_format, expected):
+    assert output_matches_format(value, output_format) is expected
+
+
+def test_selector_literals_reads_quoted_and_regex_text_only():
+    assert selector_literals('role=row[name=/^Total \\(USD\\)/] >> role=cell[name="x\\"y"] >> nth=1') == ["^Total (USD)", 'x"y']
+
+
+def test_selector_contains_literal_ignores_blank_values():
+    assert not selector_contains_literal('role=cell[name="a"]', "  ")
+
+
+def test_render_selector_escapes_quotes_and_backslashes():
+    rendered = render_selector('role=cell[name="{{v}}"]', {"v": 'a"b\\c'})
+    assert rendered == 'role=cell[name="a\\"b\\\\c"]'

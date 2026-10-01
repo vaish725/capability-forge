@@ -36,7 +36,14 @@ import anthropic
 
 from capability_forge.escalation.manager import EscalationManager, EscalationTrigger
 from capability_forge.guardrails.policy import Guardrail, PolicyViolation
-from capability_forge.schema.artifact import Checkpoint, LocatorTier, StepAction
+from capability_forge.schema.artifact import (
+    OUTPUT_FORMAT_PATTERNS,
+    Checkpoint,
+    LocatorTier,
+    StepAction,
+    output_matches_format,
+    selector_contains_literal,
+)
 from capability_forge.surfaces.playwright_driver import LocatorResolutionError, PlaywrightDriver, role_name_selector
 from capability_forge.utils.evidence import EvidenceWriter
 
@@ -173,7 +180,18 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Read the text of an element identified by its role and accessible name, without performing any action. Use this to check a value before deciding what to do next, or to identify what the final output should be read from.",
         "input_schema": {
             "type": "object",
-            "properties": _ELEMENT_TARGET_PROPERTIES,
+            "properties": {
+                **_ELEMENT_TARGET_PROPERTIES,
+                "output_name": {
+                    "type": "string",
+                    "description": "Set this only when the value is one the goal asks you to report: a short snake_case name for it, e.g. 'balance'. Leave it out for values you only read to decide what to do next.",
+                },
+                "output_format": {
+                    "type": "string",
+                    "enum": sorted(OUTPUT_FORMAT_PATTERNS),
+                    "description": "Required with output_name: what kind of value this is. Use 'text' if none of the others fit.",
+                },
+            },
             "required": ["role", "name", "reasoning"],
         },
     },
@@ -198,14 +216,24 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Required if outcome_type is business_outcome: a short snake_case name, e.g. 'member_not_found'.",
                 },
                 "checkpoint_role": {"type": "string", "description": "ARIA role of the element proving this terminal state was reached."},
-                "checkpoint_name": {"type": "string", "description": "Accessible name of that element. Empty string if it has no name."},
+                "checkpoint_name": {"type": "string", "description": "Accessible name of that element. Empty string if it has no name. Must be part of the page's structure - a label, heading, or fixed message - never a value you read from the page."},
                 "checkpoint_nth": {
                     "type": "integer",
                     "description": "Only needed if multiple elements share this exact role and name - see the same field on click/type/select.",
                 },
+                "identity_role": {
+                    "type": "string",
+                    "description": "Optional: ARIA role of an element on this final page that shows the specific identifier from your goal (e.g. the account or member number you were asked about), proving this is that record's page. Leave out if the page doesn't show it.",
+                },
+                "identity_name": {"type": "string", "description": "Accessible name of that identifier element. Required with identity_role."},
+                "identity_nth": {"type": "integer", "description": "Only needed if multiple elements share the identity role and name."},
                 "summary": {"type": "string", "description": "One sentence describing what was accomplished or found."},
+                "checkpoint_description": {
+                    "type": "string",
+                    "description": "One sentence describing this final page in general terms that would be true for any input - what kind of page it is and what it shows, with no specific names, numbers, or amounts. Used as the expected state when this is replayed for other inputs.",
+                },
             },
-            "required": ["outcome_type", "checkpoint_role", "checkpoint_name", "summary"],
+            "required": ["outcome_type", "checkpoint_role", "checkpoint_name", "summary", "checkpoint_description"],
         },
     },
     {
@@ -242,7 +270,8 @@ Guidance:
 - If you encounter an unexpected notice, dialog, or interstitial blocking your path, look for a way to dismiss or continue past it (e.g. a "Continue", "OK", or "Dismiss" button) before giving up. This is often a normal, recoverable part of the flow, not a failure.
 - If the goal cannot be completed because of the specific input you were given (for example, a record genuinely does not exist, or a requested amount exceeds what is available), that is a valid, expected result, not a failure. Call done with outcome_type="business_outcome" and a short business_outcome_reason. Do not retry a business outcome as if it were an error.
 - Only call done with outcome_type="success" once you can point to a specific element (role and name) that proves the goal was actually achieved.
-- If the goal asks you to find, report, check, or return a specific value (a balance, an account number, a status, or similar), you must call extract on that exact value before calling done - do not just state the value in your own reasoning or in done's summary. Mentioning a number in your response text is not the same as extracting it, and the run is not complete until you have.
+- If the goal asks you to find, report, check, or return a specific value (a balance, an account number, a status, or similar), you must call extract on that exact value, with output_name and output_format set, before calling done - do not just state the value in your own reasoning or in done's summary. Mentioning a number in your response text is not the same as extracting it, and the run is not complete until you have.
+- This run is recorded so it can be replayed later for other inputs, when the values on the page will be different. So done's checkpoint must be something that stays the same regardless of the values - a label, heading, or fixed message on the final page (e.g. the "Balance:" label next to a balance) - never the value itself.
 - A value can appear more than once with the identical accessible name (e.g. a "Balance" and an "Available Amount" column showing the same figure) - if extract or done reports "could not find" for a role+name that looks like it should be unique, check whether more than one element actually shares that exact text and use nth to pick the right one, the same way you would for a click or type.
 - If you are genuinely stuck - an unrecoverable error, or you've tried multiple reasonable approaches with no progress - call give_up with a clear reason rather than repeating the same action.
 - Use extract to read a value off the page when you need to check something before deciding what to do next.
@@ -260,9 +289,11 @@ class DiscoveryRun:
     checkpoint: Checkpoint | None = None
     business_outcome_reason: str | None = None
     summary: str | None = None
-    # Values read via the extract tool during the run, kept for a future artifact_recorder to
-    # reference when deciding what belongs in checkpoint.extract - not interpreted by this module.
-    extract_log: list[dict[str, str]] = field(default_factory=list)
+    # Values read via the extract tool during the run: role, name, value, and for a value the goal
+    # asks to report, output_name, output_format, and value_locator (a selector for where the value
+    # lives that doesn't mention the value itself, or None if none could be derived).
+    # artifact_recorder builds outputs and checkpoint.extract from the entries with an output_name.
+    extract_log: list[dict[str, str | None]] = field(default_factory=list)
 
 
 @dataclass
@@ -274,7 +305,7 @@ class _ToolDispatchResult:
     tool_result_text: str = ""
     stop_reason: StopReason | None = None
     recorded_step: StepAction | None = None
-    extract_entry: dict[str, str] | None = None
+    extract_entry: dict[str, str | None] | None = None
     checkpoint: Checkpoint | None = None
     business_outcome_reason: str | None = None
     summary: str | None = None
@@ -316,7 +347,7 @@ class AgentLoop:
 
     def run(self, goal_description: str, target_url: str) -> DiscoveryRun:
         steps: list[StepAction] = []
-        extract_log: list[dict[str, str]] = []
+        extract_log: list[dict[str, str | None]] = []
         state_counts: dict[str, int] = {}
         start_time = time.monotonic()
         system_prompt = build_system_prompt(goal_description)
@@ -420,7 +451,7 @@ class AgentLoop:
                     self.evidence_writer.register_secret(typed_value)
 
             step_start = time.monotonic()
-            result = self._dispatch_tool_call(block.name, block.input, target_url, len(steps) + 1)
+            result = self._dispatch_tool_call(block.name, block.input, target_url, len(steps) + 1, extract_log)
             duration_ms = int((time.monotonic() - step_start) * 1000)
             last_action_name = block.name
 
@@ -479,9 +510,16 @@ class AgentLoop:
 
         return finish(stop_reason="max_steps_exceeded")
 
-    def _dispatch_tool_call(self, name: str, tool_input: dict[str, Any], target_url: str, next_step_number: int) -> _ToolDispatchResult:
+    def _dispatch_tool_call(
+        self,
+        name: str,
+        tool_input: dict[str, Any],
+        target_url: str,
+        next_step_number: int,
+        extract_log: list[dict[str, str | None]] | None = None,
+    ) -> _ToolDispatchResult:
         if name == "done":
-            return self._handle_done(tool_input)
+            return self._handle_done(tool_input, extract_log or [])
         if name == "give_up":
             return _ToolDispatchResult(stop_reason="give_up", summary=tool_input.get("reason"))
         if name == "extract":
@@ -563,19 +601,63 @@ class AgentLoop:
         locator = self.driver.resolve_role_name(role, name, nth)
         if locator is None:
             return _ToolDispatchResult(tool_result_text=f"Could not find an element with role={role!r} name={name!r} nth={nth!r} to extract.")
-        value = locator.inner_text()
+        value = locator.inner_text().strip()
+        output_name = tool_input.get("output_name")
+        if not output_name:
+            return _ToolDispatchResult(
+                extract_entry={"role": role, "name": name, "value": value},
+                tool_result_text=f"Extracted value: {value!r}",
+            )
+
+        output_format = tool_input.get("output_format") or "text"
+        if output_format not in OUTPUT_FORMAT_PATTERNS:
+            return _ToolDispatchResult(tool_result_text=f"Unknown output_format {output_format!r}; use one of {sorted(OUTPUT_FORMAT_PATTERNS)}.")
+        if not output_matches_format(value, output_format):
+            return _ToolDispatchResult(
+                tool_result_text=f"Extracted {value!r}, but that is not a valid {output_format}. Check this is the right element, or use a format that fits."
+            )
+        # Derived now, while the page is showing the value, so the recorder has a selector for
+        # where it lives that will still work when the value is different. Never trusted from the
+        # model: derive_value_locator only returns a selector that resolves back to this element.
+        value_locator = self.driver.derive_value_locator(locator)
+        note = "" if value_locator else (
+            " Note: no stable way was found to locate this value without using the value itself "
+            "(e.g. a label in the same table row), so it can't be recorded as a replayable output."
+        )
         return _ToolDispatchResult(
-            extract_entry={"role": role, "name": name, "value": value},
-            tool_result_text=f"Extracted value: {value!r}",
+            extract_entry={
+                "role": role,
+                "name": name,
+                "value": value,
+                "output_name": output_name,
+                "output_format": output_format,
+                "value_locator": value_locator,
+            },
+            tool_result_text=f"Extracted value: {value!r} (recorded as output {output_name!r}).{note}",
         )
 
-    def _handle_done(self, tool_input: dict[str, Any]) -> _ToolDispatchResult:
+    def _handle_done(self, tool_input: dict[str, Any], extract_log: list[dict[str, str | None]]) -> _ToolDispatchResult:
         checkpoint_role = tool_input.get("checkpoint_role", "")
         checkpoint_name = tool_input.get("checkpoint_name", "")
         checkpoint_nth = tool_input.get("checkpoint_nth")
         outcome_type = tool_input.get("outcome_type", "success")
         summary = tool_input.get("summary")
         business_outcome_reason = tool_input.get("business_outcome_reason")
+
+        # A checkpoint that is itself a reported value would only ever verify while the page shows
+        # that exact value (the schema module docstring has the full story). Rejected here, while
+        # the model can still pick a label next to it, rather than at record time.
+        role_value = role_name_selector(checkpoint_role, checkpoint_name, checkpoint_nth)
+        for entry in extract_log:
+            if entry.get("output_name") and selector_contains_literal(role_value, entry["value"] or ""):
+                return _ToolDispatchResult(
+                    tool_result_text=(
+                        f"Not accepted: the checkpoint {checkpoint_name!r} contains the value you extracted as "
+                        f"{entry['output_name']!r}, and that value will be different when this is replayed for "
+                        "other inputs. Choose an element that stays the same, such as the label next to the "
+                        "value or the page's heading, and call done again."
+                    )
+                )
 
         # Never trust the model's own claim of success - verify the checkpoint element is
         # actually present before accepting the run as complete (design doc Section 4.2: emitted
@@ -590,13 +672,32 @@ class AgentLoop:
                 )
             )
 
-        role_value = role_name_selector(checkpoint_role, checkpoint_name, checkpoint_nth)
+        # Optional identity element: verified present like the checkpoint, kept as a literal
+        # selector here - artifact_recorder turns it into a {{param}} reference, or drops it if it
+        # doesn't contain any input value (then it isn't evidence of which record this is).
+        identity = None
+        identity_role = tool_input.get("identity_role")
+        if identity_role:
+            identity_name = tool_input.get("identity_name", "")
+            identity_nth = tool_input.get("identity_nth")
+            if self.driver.resolve_role_name(identity_role, identity_name, identity_nth) is None:
+                return _ToolDispatchResult(
+                    tool_result_text=(
+                        f"Could not verify the identity element: no element found with role={identity_role!r} "
+                        f"name={identity_name!r} nth={identity_nth!r}. Fix it or leave identity out, and call done again."
+                    )
+                )
+            identity = role_name_selector(identity_role, identity_name, identity_nth)
+
         # Same confidence split as build_locator_tiers: an nth-qualified match is positional
         # rather than name-based, so it's rated slightly lower.
         confidence = 0.75 if checkpoint_nth is not None else 0.9
         checkpoint = Checkpoint(
-            description=summary or "Goal reached",
+            # Not the summary: that describes this run's values, and the description is what a
+            # replay for any other input reports as its expected state.
+            description=tool_input.get("checkpoint_description") or summary or "Goal reached",
             locator=LocatorTier(strategy="role", value=role_value, confidence=confidence),
+            identity=identity,
             extract=None,
         )
         stop_reason: StopReason = "goal_complete" if outcome_type == "success" else "business_outcome"

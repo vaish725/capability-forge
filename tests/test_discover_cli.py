@@ -9,7 +9,9 @@ from types import SimpleNamespace
 import anthropic
 import pytest
 
-from capability_forge.discover import build_arg_parser, main
+from capability_forge.discover import build_arg_parser, main, parse_param_map, save_artifact
+from capability_forge.discovery.agent_loop import DiscoveryRun
+from capability_forge.schema.artifact import CapabilityArtifact, Checkpoint, LocatorTier, StepAction
 
 
 def test_goal_and_target_are_required():
@@ -113,3 +115,65 @@ def test_main_reports_anthropic_api_errors_cleanly(monkeypatch, capsys, tmp_path
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "Anthropic API error" in captured.err
+
+
+
+# --- recording: --artifact-id / --param ------------------------------------------------------------
+
+
+def test_parse_param_map_maps_literal_values_to_param_names():
+    assert parse_param_map(["member_id=12345", "note=a=b"]) == {"12345": "member_id", "a=b": "note"}
+
+
+@pytest.mark.parametrize("bad", ["member_id", "=12345", "member_id="])
+def test_parse_param_map_rejects_malformed_flags(bad):
+    with pytest.raises(ValueError, match="NAME=VALUE"):
+        parse_param_map([bad])
+
+
+def test_artifact_id_and_params_default_to_not_recording():
+    args = build_arg_parser().parse_args(["--goal", "g", "--target", "t"])
+    assert args.artifact_id is None
+    assert args.param == []
+
+
+def _completed_run(checkpoint_name="Current Balance:"):
+    return DiscoveryRun(
+        goal_description="Look up the balance for member 12345",
+        target_url="http://127.0.0.1:8000/hostile_legacy_page.html",
+        steps=[
+            StepAction(
+                step_id="step_1", action_type="type", input_value="12345", risk="safe_reversible", description="Enter 12345",
+                locators=[LocatorTier(strategy="role", value='role=textbox[name="Member ID:"]', confidence=0.9)],
+            )
+        ],
+        stop_reason="goal_complete",
+        checkpoint=Checkpoint(description="Found it", locator=LocatorTier(strategy="role", value=f'role=cell[name="{checkpoint_name}"]', confidence=0.9)),
+        extract_log=[{
+            "role": "cell", "name": "$4500.00", "value": "$4500.00", "output_name": "balance", "output_format": "currency",
+            "value_locator": "role=row[name=/^Current Balance:/] >> role=cell >> nth=1",
+        }],
+    )
+
+
+def _record_args(tmp_path, artifact_id="my_balance"):
+    return build_arg_parser().parse_args(
+        ["--goal", "g", "--target", "http://127.0.0.1:8000/hostile_legacy_page.html", "--artifact-id", artifact_id, "--artifacts-dir", str(tmp_path)]
+    )
+
+
+def test_save_artifact_writes_a_loadable_parameterized_artifact(tmp_path, capsys):
+    assert save_artifact(_completed_run(), _record_args(tmp_path), {"12345": "member_id"}) == 0
+
+    artifact = CapabilityArtifact.load(tmp_path / "my_balance.json")
+    assert artifact.steps[0].input_value == "{{member_id}}"
+    assert artifact.goal_description == "Look up the balance for member {{member_id}}"
+    assert artifact.checkpoint.extract == {"balance": "role=row[name=/^Current Balance:/] >> role=cell >> nth=1"}
+    assert artifact.target.app_name == "127.0.0.1"
+    assert "saved" in capsys.readouterr().out
+
+
+def test_save_artifact_refuses_a_value_bound_run_and_writes_nothing(tmp_path, capsys):
+    assert save_artifact(_completed_run(checkpoint_name="$4500.00"), _record_args(tmp_path), {"12345": "member_id"}) == 1
+    assert not (tmp_path / "my_balance.json").exists()
+    assert "Not recorded" in capsys.readouterr().err

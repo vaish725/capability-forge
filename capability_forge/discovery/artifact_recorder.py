@@ -31,13 +31,21 @@ Two design decisions, made explicit here rather than guessed at implementation t
    {{param}}-must-be-declared validator; templating the others is this module's own responsibility,
    not something the schema enforces, since they're display text, not executed at replay time.
 
-   One thing this still cannot help with: checkpoint.locator.value and checkpoint.extract selector
-   values are plain text captured at discovery time, with no templating support in the schema at
-   all (the cross-field validator that resolves {{param}} references only ever looks at
-   step.input_value). Parameterizing a value that also appears inside the checkpoint's own locator
-   text would produce an artifact whose checkpoint can never verify for any input other than the
-   one it was recorded with - so the caller is still responsible for not mapping a value that leaks
-   into the checkpoint's locator, and this module makes no attempt to detect that automatically.
+3. Locators never contain a value that varies between runs, and this module refuses to record one
+   that does (ValueBoundLocatorError) rather than leaving that to the caller. An earlier version
+   left it to the caller, and the fixture artifact recorded that way had a checkpoint of
+   role=cell[name="$4500.00"] - the balance it read - so it hard-failed for every member except
+   the one it was recorded with. A value varies if it is an input (a param_map literal) or an
+   output (a value extracted with an output_name). The check is an exact match against those known
+   values, not a guess about what "looks like" data. checkpoint.identity is the one exception: it
+   is supposed to contain an input value, and is templated with it ({{param}}); if it contains no
+   input value it says nothing about which record this is, so it is dropped.
+
+4. Outputs come from the run itself when the caller doesn't declare them: every extract_log entry
+   with an output_name becomes an OutputField (with its format and the value read, as `example`)
+   plus a checkpoint.extract entry using the value_locator derived during the run. An output with
+   no value_locator can't be found again for a different value, so the run is refused instead of
+   being recorded with a value-bound selector.
 """
 
 from capability_forge.discovery.agent_loop import DiscoveryRun
@@ -49,7 +57,10 @@ from capability_forge.schema.artifact import (
     StepAction,
     TargetSpec,
     extract_template_params,
+    selector_contains_literal,
 )
+
+CURRENT_SCHEMA_VERSION = "1.1"  # 1.1 added checkpoint.identity, OutputField.format/example
 
 # stop_reason values with a verified checkpoint behind them - the only ones a run can be recorded
 # from. Anything else means the run never reached a confirmed terminal state.
@@ -61,6 +72,11 @@ class UnrecordableRunError(Exception):
     guard, or a timeout) - there is nothing deterministic to replay."""
 
 
+class ValueBoundLocatorError(UnrecordableRunError):
+    """Raised when a locator the artifact would carry contains an input or output value (see the
+    module docstring's third design decision), or an output has no value-independent locator."""
+
+
 def record_artifact(
     run: DiscoveryRun,
     artifact_id: str,
@@ -70,7 +86,7 @@ def record_artifact(
     input_descriptions: dict[str, str] | None = None,
     outputs: list[OutputField] | None = None,
     checkpoint_extract: dict[str, str] | None = None,
-    schema_version: str = "1.0",
+    schema_version: str = CURRENT_SCHEMA_VERSION,
 ) -> CapabilityArtifact:
     """Build a validated CapabilityArtifact from a completed DiscoveryRun.
 
@@ -82,11 +98,14 @@ def record_artifact(
     literal - most commonly structural navigation URLs and anything that also appears in the
     checkpoint's own locator text (see the module docstring's second design decision).
 
-    outputs / checkpoint_extract: declared together, by the caller, from whatever the run actually
-    read (extract_log) or from re-inspecting the run's evidence - not inferred here. Both empty is
-    a legitimate, honest result for a run that never named a value it extracted; the schema's own
-    validator (checkpoint.extract keys must exactly match declared output names) is what actually
-    enforces consistency between the two, this function just passes them through.
+    outputs / checkpoint_extract: built from the run's own extract_log when both are omitted (see
+    the module docstring's fourth design decision); a caller can still declare them explicitly.
+    Either way, the schema's own validator (checkpoint.extract keys must exactly match declared
+    output names) enforces consistency between the two. No outputs at all is a legitimate result
+    for a run that never named a value it extracted (e.g. a business_outcome).
+
+    Raises ValueBoundLocatorError rather than return an artifact that only replays for the inputs
+    and outputs it was recorded with.
     """
     if run.stop_reason not in _RECORDABLE_STOP_REASONS:
         raise UnrecordableRunError(
@@ -117,9 +136,36 @@ def record_artifact(
         for name in sorted(used_param_names)
     ]
 
+    if outputs is None and checkpoint_extract is None:
+        outputs, checkpoint_extract = _outputs_from_extract_log(run)
+
+    # Everything that varies between runs, checked against every locator the artifact will carry.
+    varying = {literal: f"input {name!r}" for literal, name in param_map.items()}
+    for output in outputs or []:
+        if output.example:
+            varying[output.example] = f"output {output.name!r}"
+    locators_to_check = [("checkpoint locator", run.checkpoint.locator.value)]
+    locators_to_check += [(f"output {name!r} locator", selector) for name, selector in (checkpoint_extract or {}).items()]
+    locators_to_check += [(f"step {step.step_id!r} locator", tier.value) for step in steps for tier in step.locators]
+    for label, selector in locators_to_check:
+        for literal, source in varying.items():
+            if selector_contains_literal(selector, literal):
+                raise ValueBoundLocatorError(
+                    f"{label} {selector!r} contains the value of {source} ({literal!r}), so the artifact "
+                    "would only replay while that value stays the same"
+                )
+
+    # The description is replay's expected-state text for every input, so an output value left
+    # in it (the model's own prose) would misstate what another input's page should show.
+    description = _apply_param_map(run.checkpoint.description, param_map)
+    for output in outputs or []:
+        if output.example:
+            description = description.replace(output.example, f"<{output.name}>")
+
     checkpoint = Checkpoint(
-        description=_apply_param_map(run.checkpoint.description, param_map),
+        description=description,
         locator=run.checkpoint.locator,
+        identity=_template_identity(run.checkpoint.identity, param_map),
         extract=checkpoint_extract,
     )
 
@@ -150,6 +196,47 @@ def record_artifact(
         expected_outcome_type=expected_outcome_type,
         business_outcome_reason=business_outcome_reason,
     )
+
+
+def _outputs_from_extract_log(run: DiscoveryRun) -> tuple[list[OutputField], dict[str, str] | None]:
+    """One OutputField + checkpoint.extract entry per output_name in the run's extract_log (the
+    last read wins if a name was extracted more than once)."""
+    latest: dict[str, dict] = {}
+    for entry in run.extract_log:
+        if entry.get("output_name"):
+            latest[entry["output_name"]] = entry
+    outputs: list[OutputField] = []
+    extract: dict[str, str] = {}
+    for name, entry in latest.items():
+        if not entry.get("value_locator"):
+            raise ValueBoundLocatorError(
+                f"output {name!r} ({entry['value']!r}) was read from an element that can't be located "
+                "without using its own value, so it can't be found again when the value differs"
+            )
+        outputs.append(
+            OutputField(
+                name=name,
+                type="string",
+                description=f"Read at the checkpoint ({entry['output_format']}).",
+                format=entry["output_format"],
+                example=entry["value"],
+            )
+        )
+        extract[name] = entry["value_locator"]
+    return outputs, extract or None  # None, not {}: no outputs means no checkpoint.extract at all
+
+
+def _template_identity(identity: str | None, param_map: dict[str, str]) -> str | None:
+    """Replace input literals inside the identity selector's quoted text with {{name}}. Returns
+    None if there were none: an identity element that shows no input value doesn't tie the result
+    to an input, which is its only job."""
+    if identity is None:
+        return None
+    templated = identity
+    for literal in sorted(param_map, key=len, reverse=True):
+        if selector_contains_literal(templated, literal):
+            templated = templated.replace(literal, f"{{{{{param_map[literal]}}}}}")
+    return templated if extract_template_params(templated) else None
 
 
 def _apply_param_map(text: str, param_map: dict[str, str]) -> str:

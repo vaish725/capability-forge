@@ -96,7 +96,7 @@ def test_check_stability_computes_pass_rate_from_mixed_outcomes(monkeypatch, gua
         def act(self, step, params=None):
             return None
 
-        def verify_checkpoint(self, checkpoint):
+        def verify_checkpoint(self, checkpoint, params=None, output_formats=None):
             if self._fail:
                 raise CheckpointNotReachedError("simulated failure")
             return {}
@@ -119,7 +119,7 @@ def test_check_stability_reports_full_pass_rate_when_every_run_succeeds(monkeypa
         def act(self, step, params=None):
             return None
 
-        def verify_checkpoint(self, checkpoint):
+        def verify_checkpoint(self, checkpoint, params=None, output_formats=None):
             return {}
 
     monkeypatch.setattr("capability_forge.replay.reliability.PlaywrightDriver", _AlwaysSucceedsDriver)
@@ -137,7 +137,7 @@ def test_returned_artifact_is_a_new_object_not_a_mutation(monkeypatch, guardrail
         def act(self, step, params=None):
             return None
 
-        def verify_checkpoint(self, checkpoint):
+        def verify_checkpoint(self, checkpoint, params=None, output_formats=None):
             return {}
 
     monkeypatch.setattr("capability_forge.replay.reliability.PlaywrightDriver", _AlwaysSucceedsDriver)
@@ -160,7 +160,7 @@ def test_pages_are_closed_after_each_run(monkeypatch, guardrail):
         def act(self, step, params=None):
             return None
 
-        def verify_checkpoint(self, checkpoint):
+        def verify_checkpoint(self, checkpoint, params=None, output_formats=None):
             return {}
 
     monkeypatch.setattr("capability_forge.replay.reliability.PlaywrightDriver", _AlwaysSucceedsDriver)
@@ -231,3 +231,39 @@ def test_check_stability_against_the_real_fixture_uses_a_fresh_driver_per_page(b
     assert len(created_pages) == 2
     assert created_pages[0] is not created_pages[1]
     assert all(p.is_closed() for p in created_pages)
+
+
+def _member_lookup_artifact(target, checkpoint_value):
+    steps = [
+        step("s1", "type", [locator(value='role=textbox[name="User Name:"]')], "jdoe", "Enter username"),
+        step("s2", "type", [locator(value='role=textbox[name="Password:"]')], "secret", "Enter password"),
+        step("s3", "click", [locator(value='role=button[name="Login"]')], None, "Submit login"),
+        step("s4", "type", [locator(value='role=textbox[name="Member ID:"]')], "{{member_id}}", "Enter member id"),
+        step("s5", "click", [locator(value='role=button[name="Search"]')], None, "Search"),
+    ]
+    checkpoint = Checkpoint(description="x", locator=locator(value=checkpoint_value), extract=None)
+    return artifact(target, steps, checkpoint, inputs=[InputParam(name="member_id", type="string", required=True, description="x")])
+
+
+@pytest.mark.parametrize(
+    "checkpoint_value,expected_pass_rate",
+    [
+        # Schema 1.0's value-bound checkpoint: scored 1.0 over the one recorded input, 0.5 here.
+        ('role=cell[name="$4500.00"]', 0.5),
+        ('role=cell[name="Current Balance:"]', 1.0),
+    ],
+)
+def test_check_stability_over_several_input_sets_catches_a_value_bound_checkpoint(browser, guardrail, fixture_server, checkpoint_value, expected_pass_rate):
+    art = _member_lookup_artifact(f"{fixture_server}/hostile_legacy_page.html", checkpoint_value)
+    param_sets = [{"member_id": "12345"}, {"member_id": "67890"}]
+
+    result = check_stability(art, page_factory=browser.new_page, guardrail=guardrail, param_sets=param_sets, sample_size=1)
+
+    assert result.artifact.reliability.pass_rate == expected_pass_rate
+    assert result.artifact.reliability.sample_size == 2
+    assert result.artifact.reliability.distinct_param_sets == 2
+
+
+def test_check_stability_rejects_params_and_param_sets_together(guardrail):
+    with pytest.raises(ValueError, match="not both"):
+        check_stability(_minimal_artifact(), page_factory=_FakePage, guardrail=guardrail, params={}, param_sets=[{}])

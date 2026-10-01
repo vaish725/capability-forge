@@ -185,7 +185,7 @@ class ReplayEngine:
             self._log_step(step, resolved_tier, destination, outcome_type, duration_ms)
 
         try:
-            outputs = self._verify_checkpoint_with_escalation(artifact)
+            outputs = self._verify_checkpoint_with_escalation(artifact, normalized_params)
         except CheckpointNotReachedError as exc:
             return self._hard_failure(artifact, step_records, run_start, "checkpoint", artifact.checkpoint.description, str(exc))
 
@@ -313,11 +313,17 @@ class ReplayEngine:
                 raise
             return self.driver.act(step, normalized_params)
 
-    def _verify_checkpoint_with_escalation(self, artifact: CapabilityArtifact) -> dict[str, str]:
+    def _verify_checkpoint_with_escalation(self, artifact: CapabilityArtifact, params: dict[str, str]) -> dict[str, str]:
         """Same one-retry-after-a-human-looked-at-it pattern as _act_with_escalation, for the
-        checkpoint itself never resolving."""
+        checkpoint itself never resolving. params fill in checkpoint.identity; output formats come
+        from the artifact's declared outputs."""
+        output_formats = {output.name: output.format for output in artifact.outputs}
+
+        def verify() -> dict[str, str]:
+            return self.driver.verify_checkpoint(artifact.checkpoint, params=params, output_formats=output_formats)
+
         try:
-            return self.driver.verify_checkpoint(artifact.checkpoint)
+            return verify()
         except CheckpointNotReachedError as exc:
             if self.escalation_manager is None:
                 raise
@@ -332,7 +338,7 @@ class ReplayEngine:
             record = self.escalation_manager.run_handoff(trigger)
             if record.decision != "resume":
                 raise
-            return self.driver.verify_checkpoint(artifact.checkpoint)
+            return verify()
 
     def _maybe_screenshot(self) -> str | None:
         if self.evidence_writer is None:

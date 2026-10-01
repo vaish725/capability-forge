@@ -522,6 +522,78 @@ def test_extract_is_logged_but_not_recorded_as_a_step(driver, guardrail, fixture
     assert result.extract_log[0]["value"] == "First Fidelity Member Services - Internal Portal"
 
 
+LOGIN_AND_SEARCH_12345 = [
+    ("type", {"role": "textbox", "name": "User Name:", "value": "jdoe", "risk": "safe_reversible", "reasoning": "log in"}),
+    ("type", {"role": "textbox", "name": "Password:", "value": "secret", "risk": "safe_reversible", "reasoning": "log in"}),
+    ("click", {"role": "button", "name": "Login", "risk": "safe_reversible", "reasoning": "submit login"}),
+    ("type", {"role": "textbox", "name": "Member ID:", "value": "12345", "risk": "safe_reversible", "reasoning": "search"}),
+    ("click", {"role": "button", "name": "Search", "risk": "safe_reversible", "reasoning": "search"}),
+]
+EXTRACT_BALANCE = ("extract", {"role": "cell", "name": "$4500.00", "output_name": "balance", "output_format": "currency", "reasoning": "the goal's value"})
+
+
+def scripted(calls):
+    return [ScriptedMessage([tool_use(name, tool_input, f"t{i}")]) for i, (name, tool_input) in enumerate(calls, start=1)]
+
+
+def test_extract_with_output_name_derives_a_value_independent_locator(driver, guardrail, fixture_server):
+    agent, _ = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, EXTRACT_BALANCE, ("give_up", {"reason": "stop"})]))
+    result = agent.run("A goal", f"{fixture_server}/hostile_legacy_page.html")
+
+    entry = result.extract_log[-1]
+    assert entry["output_name"] == "balance"
+    assert entry["output_format"] == "currency"
+    assert entry["value_locator"] == "role=row[name=/^Current Balance:/] >> role=cell >> nth=1"
+
+
+def test_extract_with_a_format_the_value_does_not_match_is_not_logged(driver, guardrail, fixture_server):
+    wrong_format = ("extract", {**EXTRACT_BALANCE[1], "output_format": "date"})
+    agent, client = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, wrong_format, ("give_up", {"reason": "stop"})]))
+    result = agent.run("A goal", f"{fixture_server}/hostile_legacy_page.html")
+
+    assert result.extract_log == []
+    assert "not a valid date" in client.calls[-1]["messages"][-2]["content"][0]["content"]
+
+
+def test_done_rejects_a_checkpoint_that_is_an_extracted_output_value(driver, guardrail, fixture_server):
+    # The schema 1.0 fixture artifact's checkpoint, refused at the moment the model proposes it
+    # and accepted once it points at the label instead.
+    value_checkpoint = ("done", {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "$4500.00", "summary": "Found it."})
+    label_checkpoint = ("done", {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "Current Balance:", "summary": "Found it."})
+    agent, client = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, EXTRACT_BALANCE, value_checkpoint, label_checkpoint]))
+    result = agent.run("A goal", f"{fixture_server}/hostile_legacy_page.html")
+
+    assert "Not accepted" in client.calls[-1]["messages"][-2]["content"][0]["content"]
+    assert result.stop_reason == "goal_complete"
+    assert result.checkpoint.locator.value == 'role=cell[name="Current Balance:"]'
+
+
+def test_done_uses_the_general_checkpoint_description_not_the_runs_summary(driver, guardrail, fixture_server):
+    done = ("done", {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "Current Balance:", "summary": "Jane Doe has $4500.00.", "checkpoint_description": "A member's account detail page showing their current balance."})
+    agent, _ = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, done]))
+    result = agent.run("A goal", f"{fixture_server}/hostile_legacy_page.html")
+
+    assert result.checkpoint.description == "A member's account detail page showing their current balance."
+    assert result.summary == "Jane Doe has $4500.00."
+
+
+def test_done_records_a_verified_identity_element(driver, guardrail, fixture_server):
+    done = ("done", {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "Current Balance:", "identity_role": "cell", "identity_name": "Jane Doe", "summary": "Found it."})
+    agent, _ = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, done]))
+    result = agent.run("A goal", f"{fixture_server}/hostile_legacy_page.html")
+
+    assert result.checkpoint.identity == 'role=cell[name="Jane Doe"]'
+
+
+def test_done_with_an_identity_element_that_is_not_on_the_page_is_not_accepted(driver, guardrail, fixture_server):
+    bad = ("done", {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "Current Balance:", "identity_role": "cell", "identity_name": "Nobody", "summary": "x"})
+    agent, client = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, bad, ("give_up", {"reason": "stop"})]))
+    result = agent.run("A goal", f"{fixture_server}/hostile_legacy_page.html")
+
+    assert result.stop_reason == "give_up"
+    assert "Could not verify the identity element" in client.calls[-1]["messages"][-2]["content"][0]["content"]
+
+
 # --- guardrail policy violations don't crash the loop --------------------------------------------
 
 
@@ -592,3 +664,8 @@ def test_system_prompt_requires_extract_before_reporting_a_found_value():
 def test_system_prompt_warns_about_duplicate_accessible_names_needing_nth():
     prompt = build_system_prompt("Find the balance")
     assert "more than one element actually shares that exact text" in prompt
+
+
+def test_system_prompt_says_the_checkpoint_must_not_be_a_value():
+    prompt = build_system_prompt("Find the balance")
+    assert "never the value itself" in prompt

@@ -59,6 +59,7 @@ def check_stability(
     params: dict[str, Any] | None = None,
     confirm_risky: bool = False,
     sample_size: int = DEFAULT_SAMPLE_SIZE,
+    param_sets: list[dict[str, Any]] | None = None,
 ) -> StabilityCheckResult:
     """Replay `artifact` `sample_size` times, each against a fresh page from page_factory() (e.g.
     `lambda: browser.new_page()`) - this function owns that page's lifecycle, closing it after
@@ -72,17 +73,28 @@ def check_stability(
     ParamValidationError - everything else is caught internally and turned into a hard_failure
     ReplayResult) rather than catching and repeating it sample_size times: a param mismatch is a
     caller/artifact contract problem, not a reliability signal, and it will fail identically on
-    every subsequent attempt."""
+    every subsequent attempt.
+
+    param_sets: several input sets instead of one `params`, each replayed sample_size times. This
+    is what tests the "parameterized" claim itself: a pass_rate over one input only shows the
+    recorded flow repeats, and the schema 1.0 fixture artifact scored 1.0 that way while failing
+    for every member but the one it was recorded with."""
+    if param_sets is not None and params is not None:
+        raise ValueError("pass either params or param_sets, not both")
+    all_param_sets = param_sets if param_sets is not None else [params or {}]
+    if not all_param_sets:
+        raise ValueError("param_sets must not be empty")
+
     runs: list[ReplayResult] = []
     durations_ms: list[float] = []
 
-    for _ in range(sample_size):
+    for run_params in [p for p in all_param_sets for _ in range(sample_size)]:
         page = page_factory()
         try:
             driver = PlaywrightDriver(page)
             engine = ReplayEngine(driver, guardrail)
             run_start = time.monotonic()
-            result = engine.run(artifact, params=params, confirm_risky=confirm_risky)
+            result = engine.run(artifact, params=run_params, confirm_risky=confirm_risky)
             durations_ms.append((time.monotonic() - run_start) * 1000)
             runs.append(result)
         finally:
@@ -90,10 +102,11 @@ def check_stability(
 
     passed = sum(1 for r in runs if r.status != "hard_failure")
     reliability = ReliabilityInfo(
-        pass_rate=passed / sample_size,
-        avg_duration_ms=sum(durations_ms) / sample_size,
-        sample_size=sample_size,
+        pass_rate=passed / len(runs),
+        avg_duration_ms=sum(durations_ms) / len(runs),
+        sample_size=len(runs),
         last_checked=datetime.now(timezone.utc),
+        distinct_param_sets=len(all_param_sets),
     )
     # model_copy(update=...), not mutating artifact.reliability directly - CapabilityArtifact is
     # treated as immutable everywhere else in this project (see module docstring).

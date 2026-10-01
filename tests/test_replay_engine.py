@@ -141,6 +141,42 @@ def test_replay_substitutes_declared_params_into_steps(driver, guardrail, fixtur
     assert result.status == "success"
 
 
+def value_independent_artifact(target, identity=None, extra_inputs=()):
+    """The schema 1.1 shape discovery now records: label-anchored checkpoint and output, an
+    optional input-bound identity, and a declared output format."""
+    steps = LOGIN_STEPS + [
+        step("s4", "type", [locator(value='role=textbox[name="Member ID:"]')], "{{member_id}}", "Enter member id"),
+        step("s5", "click", [locator(value='role=button[name="Search"]')], None, "Search"),
+    ]
+    checkpoint = Checkpoint(
+        description="Balance shown",
+        locator=locator(value='role=cell[name="Current Balance:"]'),
+        identity=identity,
+        extract={"balance": "role=row[name=/^Current Balance:/] >> role=cell >> nth=1"},
+    )
+    inputs = [InputParam(name=name, type="string", required=True, description="x") for name in ("member_id", *extra_inputs)]
+    outputs = [OutputField(name="balance", type="string", description="x", format="currency", example="$4500.00")]
+    return artifact(target, steps, checkpoint, inputs=inputs, outputs=outputs)
+
+
+@pytest.mark.parametrize("member_id,expected_balance", [("12345", "$4500.00"), ("67890", "$250.75")])
+def test_one_artifact_replays_for_every_member(driver, guardrail, fixture_server, member_id, expected_balance):
+    # The regression behind schema 1.1: the 1.0 fixture artifact hard-failed for 67890.
+    art = value_independent_artifact(f"{fixture_server}/hostile_legacy_page.html")
+    result = engine(driver, guardrail).run(art, params={"member_id": member_id})
+    assert result.status == "success"
+    assert result.outputs == {"balance": expected_balance}
+
+
+def test_replay_hard_fails_when_the_page_is_not_the_requested_records(driver, guardrail, fixture_server):
+    # Identity binding the fixture's own way: the detail frame shows the member's name, not their
+    # id, so a test-only "member_name" input stands in for a page that echoes the requested id.
+    art = value_independent_artifact(f"{fixture_server}/hostile_legacy_page.html", identity='role=cell[name="{{member_name}}"]', extra_inputs=["member_name"])
+    result = engine(driver, guardrail).run(art, params={"member_id": "67890", "member_name": "Jane Doe"})
+    assert result.status == "hard_failure"
+    assert "identity" in result.observed_state
+
+
 def test_missing_required_param_rejected_before_touching_the_browser(driver, guardrail, fixture_server):
     target = f"{fixture_server}/hostile_legacy_page.html"
     checkpoint = Checkpoint(description="x", locator=locator(value='role=heading[name="First Fidelity Member Services - Internal Portal"]'), extract=None)
@@ -524,11 +560,11 @@ def test_hard_failure_checkpoint_resumed_by_operator_is_retried(driver, guardrai
         def __getattr__(self, name):
             return getattr(self._real, name)
 
-        def verify_checkpoint(self, checkpoint):
+        def verify_checkpoint(self, checkpoint, params=None, output_formats=None):
             self.verify_calls += 1
             if self.verify_calls == 1:
                 raise CheckpointNotReachedError("simulated - not visible yet")
-            return self._real.verify_checkpoint(checkpoint)
+            return self._real.verify_checkpoint(checkpoint, params, output_formats)
 
     target = f"{fixture_server}/hostile_legacy_page.html"
     flaky_driver = FlakyCheckpoint(driver)

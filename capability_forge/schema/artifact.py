@@ -25,6 +25,19 @@ be saved (or loaded) in a state that contradicts its own design rationale:
     success checkpoint from a business_outcome checkpoint - the two resolve identically at replay
     time (the element is present, the run reached its terminal state), so there is no mechanical
     way to tell them apart without the artifact self-declaring which one it is.
+  - no checkpoint selector may contain a value the page itself reports (an output's recorded
+    `example`). The checkpoint does three separate jobs, each with its own field:
+      locator  - reached the right screen: page structure only (a label, heading, fixed message),
+                 never templated, never a data value.
+      identity - for the right entity: optional, and must reference at least one declared input
+                 via {{param}}, e.g. role=cell[name="{{account_id}}"]. The only templated selector.
+      extract  - read each output from where it lives (e.g. the cell after its label), never by
+                 what it said when recorded.
+    Schema 1.0 artifacts used one locator for all three, and since a data cell's accessible name
+    is its own text, the locator ended up encoding the recorded value (role=cell[name="$4500.00"]),
+    so the artifact only ever verified for the one input it was recorded with. Literal text in a
+    selector is for UI chrome, never for data; this validator makes the value-bound case fail at
+    load time instead of at replay time for every other input.
 """
 
 import re
@@ -64,6 +77,52 @@ def render_template(value: str | None, params: dict[str, str]) -> str | None:
         return params[name]
 
     return TEMPLATE_PARAM_PATTERN.sub(_replace, value)
+
+
+def render_selector(selector: str, params: dict[str, str]) -> str:
+    """render_template for a selector string rather than text to type: each param value is
+    escaped for a double-quoted selector literal first, so a value containing a quote or
+    backslash can't break out of name="..." and change what the selector matches."""
+    escaped = {name: value.replace("\\", "\\\\").replace('"', '\\"') for name, value in params.items()}
+    return render_template(selector, escaped)  # type: ignore[return-value] - selector is never None
+
+
+# Matches the literal text a selector compares against: double-quoted strings and /regex/ bodies.
+# Used to check what a selector matches on, without false positives from its structural parts
+# (role names, ">> nth=1").
+_SELECTOR_LITERAL_PATTERN = re.compile(r'"((?:[^"\\]|\\.)*)"|/((?:[^/\\]|\\.)+)/')
+
+
+def selector_literals(selector: str) -> list[str]:
+    """The text a selector matches against, e.g. ['Current Balance:'] for
+    role=cell[name="Current Balance:"], with backslash escapes dropped (in both quoted strings and
+    regex bodies) so it compares directly against plain values."""
+    return [re.sub(r"\\(.)", r"\1", quoted or regex) for quoted, regex in _SELECTOR_LITERAL_PATTERN.findall(selector)]
+
+
+def selector_contains_literal(selector: str, value: str) -> bool:
+    """True if value appears inside the text selector compares against - the check behind every
+    "this locator only works for the value it was recorded with" guard."""
+    value = value.strip()
+    return bool(value) and any(value in literal for literal in selector_literals(selector))
+
+
+# Output formats a replay can check a read value against, so a checkpoint confirms the value is
+# well-formed, not just that something is present where it should be. Deliberately a small closed
+# set with fixed patterns rather than a free-form regex an LLM writes, so every format check is
+# reviewable here. Values are stripped before matching.
+OUTPUT_FORMAT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "currency": re.compile(r"^\(?-?[$€£¥]?\s?-?(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?\)?$"),
+    "integer": re.compile(r"^-?(\d{1,3}(,\d{3})+|\d+)$"),
+    "decimal": re.compile(r"^-?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$"),
+    "date": re.compile(r"^(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})$"),
+    "text": re.compile(r"\S"),
+}
+OutputFormat = Literal["currency", "integer", "decimal", "date", "text"]
+
+
+def output_matches_format(value: str, output_format: str) -> bool:
+    return bool(OUTPUT_FORMAT_PATTERNS[output_format].search(value.strip()))
 
 
 class LocatorTier(BaseModel):
@@ -128,13 +187,17 @@ ACTION_TYPES: tuple[str, ...] = get_args(StepAction.model_fields["action_type"].
 
 class Checkpoint(BaseModel):
     """The element/state that must be present for a run to count as having reached its goal, plus
-    the named outputs read from that same state."""
+    the named outputs read from that same state. See the module docstring for why locator,
+    identity, and extract are three separate fields."""
 
     model_config = ConfigDict(extra="forbid")
 
     description: str = Field(min_length=1)
-    locator: LocatorTier
-    extract: dict[str, str] | None = None  # named outputs, e.g. {"balance": "css=.balance-value"}
+    locator: LocatorTier  # reached the right screen - page structure only
+    # for the right entity - optional, must reference a declared input, e.g. role=cell[name="{{account_id}}"]
+    identity: str | None = None
+    # named outputs, e.g. {"balance": 'role=row[name=/^Current Balance:/] >> role=cell >> nth=1'}
+    extract: dict[str, str] | None = None
 
 
 class InputParam(BaseModel):
@@ -156,6 +219,18 @@ class OutputField(BaseModel):
     name: str = Field(min_length=1)
     type: Literal["string", "int", "float", "bool"]
     description: str = Field(min_length=1)
+    # Checked at replay: a value read from the right place but malformed (empty, "N/A", an error
+    # string) fails the checkpoint instead of being returned as if it were the answer.
+    format: OutputFormat | None = None
+    # What discovery actually read. Documentation, and the reference the value-bound validator
+    # checks selectors against - never compared to a replay's value, which is expected to differ.
+    example: str | None = None
+
+    @model_validator(mode="after")
+    def _example_matches_format(self) -> "OutputField":
+        if self.example is not None and self.format is not None and not output_matches_format(self.example, self.format):
+            raise ValueError(f"output {self.name!r}: example {self.example!r} does not match its own format {self.format!r}")
+        return self
 
 
 class TargetSpec(BaseModel):
@@ -187,6 +262,10 @@ class ReliabilityInfo(BaseModel):
     avg_duration_ms: float = Field(ge=0.0)
     sample_size: int = Field(ge=1)  # how many runs pass_rate/avg_duration_ms were computed over
     last_checked: datetime
+    # How many different input sets those runs covered. A pass_rate over one input only shows the
+    # flow repeats; over several it shows the artifact is actually parameterized. Defaults to 1,
+    # which is what every check before this field existed measured.
+    distinct_param_sets: int = Field(default=1, ge=1)
 
 
 class CapabilityArtifact(BaseModel):
@@ -277,6 +356,42 @@ class CapabilityArtifact(BaseModel):
                 "checkpoint.extract keys must exactly match declared outputs: "
                 f"declared={sorted(declared_outputs)}, extract={sorted(extract_keys)}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _only_checkpoint_identity_is_templated(self) -> "CapabilityArtifact":
+        # locator and extract must find the same place for every input, so a {{param}} in either
+        # means they don't; identity exists to tie the result to an input, so it must have one.
+        checkpoint = self.checkpoint
+        for label, selector in [("locator", checkpoint.locator.value), *((f"extract[{k!r}]", v) for k, v in (checkpoint.extract or {}).items())]:
+            if extract_template_params(selector):
+                raise ValueError(f"checkpoint {label} must not reference input params (only checkpoint.identity may): {selector!r}")
+        if checkpoint.identity is not None:
+            referenced = extract_template_params(checkpoint.identity)
+            if not referenced:
+                raise ValueError(f"checkpoint.identity must reference at least one declared input via {{{{param}}}}: {checkpoint.identity!r}")
+            undeclared = referenced - {param.name for param in self.inputs}
+            if undeclared:
+                raise ValueError(f"checkpoint.identity references undeclared input param(s): {sorted(undeclared)}")
+        return self
+
+    @model_validator(mode="after")
+    def _checkpoint_selectors_are_not_value_bound(self) -> "CapabilityArtifact":
+        # See the module docstring: a selector containing a value the page reports only finds
+        # that element while the page still reports that exact value.
+        checkpoint = self.checkpoint
+        selectors = [checkpoint.locator.value, *(checkpoint.extract or {}).values()]
+        if checkpoint.identity is not None:
+            selectors.append(checkpoint.identity)
+        for output in self.outputs:
+            if output.example is None:
+                continue
+            for selector in selectors:
+                if selector_contains_literal(selector, output.example):
+                    raise ValueError(
+                        f"checkpoint selector {selector!r} contains output {output.name!r}'s recorded value "
+                        f"{output.example!r}, so it would only verify while the page shows that exact value"
+                    )
         return self
 
     def save(self, path: str | Path) -> None:

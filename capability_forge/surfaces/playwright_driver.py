@@ -55,7 +55,14 @@ from dataclasses import dataclass
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator, Page
 
-from capability_forge.schema.artifact import Checkpoint, LocatorTier, StepAction, render_template
+from capability_forge.schema.artifact import (
+    Checkpoint,
+    LocatorTier,
+    StepAction,
+    output_matches_format,
+    render_selector,
+    render_template,
+)
 
 # Matches the role=X[name="Y"] selector strings this module constructs itself (resolve_role_name,
 # build_locator_tiers, and the discovery loop's checkpoint locators all use this exact shape) -
@@ -64,6 +71,11 @@ from capability_forge.schema.artifact import Checkpoint, LocatorTier, StepAction
 # " >> nth=N" suffix and will not match here, which is correct - nth already fully disambiguates
 # the element, so the by-visible-text fallback (which re-searches without nth) doesn't apply to it.
 _ROLE_NAME_SELECTOR_PATTERN = re.compile(r'^role=([a-zA-Z]+)\[name="(.*)"\]$')
+
+# Characters with special meaning in a JS regex (plus "/", which ends a /regex/ in a selector).
+# Escaped individually rather than with re.escape, which also escapes spaces and would make
+# derived selectors like role=row[name=/^Current Balance:/] needlessly hard to read in artifacts.
+_JS_REGEX_SPECIAL = re.compile(r"[\\^$.|?*+()\[\]{}/]")
 
 
 def role_name_selector(role: str, name: str, nth: int | None) -> str:
@@ -185,22 +197,80 @@ class PlaywrightDriver:
         dispatch[step.action_type](target, resolved_value)
         return target.tier
 
-    def verify_checkpoint(self, checkpoint: Checkpoint) -> dict[str, str]:
-        """Confirm the checkpoint's locator is present, then read every declared output. Returns
-        the extracted {name: value} dict. Raises CheckpointNotReachedError if the checkpoint
-        locator or any declared output's locator can't be found."""
+    def verify_checkpoint(
+        self,
+        checkpoint: Checkpoint,
+        params: dict[str, str] | None = None,
+        output_formats: dict[str, str | None] | None = None,
+    ) -> dict[str, str]:
+        """Check the checkpoint's three jobs in order (see the schema module docstring): the
+        locator is present (right screen), the identity selector resolves once this run's params
+        are substituted in (right entity), and every declared output is found and, where a format
+        is declared, well-formed. Returns the extracted {name: value} dict. Raises
+        CheckpointNotReachedError on the first of those that doesn't hold."""
         locator = self._find_unique(checkpoint.locator.value)
         if locator is None:
             raise CheckpointNotReachedError(f"checkpoint locator not found: {checkpoint.locator.value!r}")
         locator.wait_for(state="visible")
 
+        if checkpoint.identity is not None:
+            identity_selector = render_selector(checkpoint.identity, params or {})
+            if self._find_unique(identity_selector) is None:
+                raise CheckpointNotReachedError(f"checkpoint identity not found for this run's inputs: {identity_selector!r}")
+
+        output_formats = output_formats or {}
         outputs: dict[str, str] = {}
         for name, selector in (checkpoint.extract or {}).items():
             value_locator = self._find_unique(selector)
             if value_locator is None:
                 raise CheckpointNotReachedError(f"declared output {name!r} not found via {selector!r}")
-            outputs[name] = value_locator.inner_text()
+            value = value_locator.inner_text().strip()
+            output_format = output_formats.get(name)
+            if output_format is not None and not output_matches_format(value, output_format):
+                raise CheckpointNotReachedError(f"declared output {name!r} read {value!r}, which is not a valid {output_format}")
+            outputs[name] = value
         return outputs
+
+    def derive_value_locator(self, value_locator: Locator) -> str | None:
+        """Given an element holding a value read off the page, build a selector that finds the
+        same place without mentioning the value itself, so it still works when the value differs
+        (another record, or the same record later). Tried in order:
+          1. The label in the same table row: role=row[name=/^Label/] >> role=cell >> nth=K, for
+             the common legacy layout of a "Label:" cell followed by the value cell.
+          2. The element's own id, if it has one.
+        A candidate is only returned if it resolves back to exactly this element, so a derived
+        selector is never a guess. Returns None if neither works - the caller decides what that
+        means (discovery refuses to record the output rather than fall back to a value-bound
+        selector)."""
+        value_text = value_locator.inner_text().strip()
+        cell = value_locator.locator("xpath=ancestor-or-self::*[self::td or self::th][1]")
+        row = value_locator.locator("xpath=ancestor::tr[1]")
+        if cell.count() == 1 and row.count() == 1:
+            cells = row.locator("role=cell")
+            cell_handle = cell.element_handle()
+            index = next((i for i in range(cells.count()) if cells.nth(i).evaluate("(el, target) => el === target", cell_handle)), None)
+            if index:  # None (not a role=cell) or 0 (the value is the label column itself) can't anchor
+                label = cells.nth(0).inner_text().strip()
+                if label and value_text and value_text not in label:
+                    pattern = _JS_REGEX_SPECIAL.sub(r"\\\g<0>", label)
+                    candidate = f"role=row[name=/^{pattern}/] >> role=cell >> nth={index}"
+                    if self._resolves_to(candidate, cell_handle):
+                        return candidate
+        element_id = value_locator.get_attribute("id")
+        if element_id:
+            candidate = f"#{element_id}"
+            if self._resolves_to(candidate, value_locator.element_handle()):
+                return candidate
+        return None
+
+    def _resolves_to(self, selector: str, element_handle) -> bool:
+        found = self._find_unique(selector)
+        if found is None:
+            return False
+        try:
+            return found.evaluate("(el, target) => el === target", element_handle)
+        except PlaywrightError:
+            return False  # found in a different frame than the target - not the same element
 
     def resolve_role_name(self, role: str, name: str, nth: int | None = None) -> Locator | None:
         """Resolve a role + accessible-name pair - the terms an LLM reads directly off the

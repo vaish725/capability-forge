@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from capability_forge.discovery.agent_loop import DiscoveryRun
-from capability_forge.discovery.artifact_recorder import UnrecordableRunError, record_artifact
+from capability_forge.discovery.artifact_recorder import UnrecordableRunError, ValueBoundLocatorError, record_artifact
 from capability_forge.schema.artifact import CapabilityArtifact, Checkpoint, LocatorTier, OutputField, StepAction
 
 
@@ -290,8 +290,8 @@ def test_records_the_real_parabank_run_shape():
         artifact_id="parabank_check_balance",
         app_name="parabank",
         param_map={"demo_user_16896": "username", "demo_pw_16896x": "password"},
-        # 16896 deliberately left unmapped: it also appears inside the checkpoint's own recorded
-        # text, which the schema has no templating support for - see the module docstring.
+        # 16896 left unmapped, as in the original run: mapping it to an input is refused, because
+        # this checkpoint row contains it - see test_value_bound_parabank_checkpoint_is_refused.
     )
 
     assert artifact.steps[0].input_value == "{{username}}"
@@ -316,3 +316,78 @@ def test_records_the_real_parabank_run_shape():
     dumped = artifact.model_dump_json()
     restored = CapabilityArtifact.model_validate_json(dumped)
     assert restored == artifact
+
+
+
+# --- value-bound locators are refused; outputs and identity come from the run ---------------------
+
+LABEL_ANCHORED_BALANCE = "role=row[name=/^Current Balance:/] >> role=cell >> nth=1"
+
+
+def balance_entry(value="$4500.00", value_locator=LABEL_ANCHORED_BALANCE):
+    return {"role": "cell", "name": value, "value": value, "output_name": "balance", "output_format": "currency", "value_locator": value_locator}
+
+
+def label_checkpoint(identity=None):
+    return Checkpoint(description="Balance shown", locator=locator(value='role=cell[name="Current Balance:"]'), identity=identity, extract=None)
+
+
+def test_outputs_and_extract_are_built_from_the_extract_log():
+    run = make_run(checkpoint=label_checkpoint(), extract_log=[{"role": "cell", "name": "Login", "value": "Login"}, balance_entry()])
+    artifact = record_artifact(run, artifact_id="a", app_name="app")
+    assert [(o.name, o.format, o.example) for o in artifact.outputs] == [("balance", "currency", "$4500.00")]
+    assert artifact.checkpoint.extract == {"balance": LABEL_ANCHORED_BALANCE}
+    assert artifact.schema_version == "1.1"
+
+
+def test_the_last_read_of_an_output_wins():
+    run = make_run(checkpoint=label_checkpoint(), extract_log=[balance_entry("$1.00"), balance_entry("$2.00")])
+    assert record_artifact(run, artifact_id="a", app_name="app").outputs[0].example == "$2.00"
+
+
+def test_output_without_a_value_independent_locator_is_refused():
+    run = make_run(checkpoint=label_checkpoint(), extract_log=[balance_entry(value_locator=None)])
+    with pytest.raises(ValueBoundLocatorError, match="can't be located without using its own value"):
+        record_artifact(run, artifact_id="a", app_name="app")
+
+
+def test_checkpoint_containing_an_output_value_is_refused():
+    # The schema 1.0 fixture artifact, reproduced: the checkpoint was the balance cell itself.
+    value_bound = Checkpoint(description="Balance shown", locator=locator(value='role=cell[name="$4500.00"]'), extract=None)
+    run = make_run(checkpoint=value_bound, extract_log=[balance_entry()])
+    with pytest.raises(ValueBoundLocatorError, match="output 'balance'"):
+        record_artifact(run, artifact_id="a", app_name="app")
+
+
+def test_value_bound_parabank_checkpoint_is_refused():
+    # The original ParaBank checkpoint contains the account number; once account_id is declared an
+    # input, recording it would produce an artifact that only works for that one account.
+    checkpoint = Checkpoint(description="d", locator=locator(value='role=row[name="16896 $423.50 $423.50"]'), extract=None)
+    with pytest.raises(ValueBoundLocatorError, match="input 'account_id'"):
+        record_artifact(make_run(checkpoint=checkpoint), artifact_id="a", app_name="app", param_map={"16896": "account_id"})
+
+
+def test_step_locator_containing_an_input_value_is_refused():
+    steps = [step(locators=[locator(value='role=link[name="Account 16896"]')])]
+    with pytest.raises(ValueBoundLocatorError, match="step 'step_1' locator"):
+        record_artifact(make_run(steps=steps, checkpoint=label_checkpoint()), artifact_id="a", app_name="app", param_map={"16896": "account_id"})
+
+
+def test_identity_is_templated_with_the_input_it_shows():
+    steps = [step(action_type="navigate", locators=[], input_value="https://example.com/activity?id=16896")]
+    run = make_run(steps=steps, checkpoint=label_checkpoint(identity='role=cell[name="16896"]'))
+    artifact = record_artifact(run, artifact_id="a", app_name="app", param_map={"16896": "account_id"})
+    assert artifact.checkpoint.identity == 'role=cell[name="{{account_id}}"]'
+    assert artifact.steps[0].input_value == "https://example.com/activity?id={{account_id}}"
+
+
+def test_identity_showing_no_input_value_is_dropped():
+    run = make_run(checkpoint=label_checkpoint(identity='role=cell[name="Jane Doe"]'))
+    assert record_artifact(run, artifact_id="a", app_name="app").checkpoint.identity is None
+
+
+def test_output_values_are_removed_from_the_checkpoint_description():
+    checkpoint = Checkpoint(description="Member 12345's balance is $4500.00", locator=locator(value='role=cell[name="Current Balance:"]'), extract=None)
+    run = make_run(checkpoint=checkpoint, extract_log=[balance_entry()])
+    artifact = record_artifact(run, artifact_id="a", app_name="app", param_map={"12345": "member_id"})
+    assert artifact.checkpoint.description == "Member {{member_id}}'s balance is <balance>"
