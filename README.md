@@ -33,9 +33,12 @@ Feature-complete against the assignment's six core requirements, plus both prior
 - **Discovery** - an LLM drives a real browser (Playwright) through an observe-decide-act loop,
   wrapped in the same guardrail policy (allowlist, risk classification, redaction) that wraps
   replay, with a dead-end guard against infinite loops.
-- **Capability artifacts** - a discovery run is recorded into a typed, versioned, parameterized
-  `CapabilityArtifact` (`artifact_recorder.py`), with per-run evidence (log, screenshots, redacted
-  transcript) written to `evidence/<run_id>/`.
+- **Capability artifacts** - `discover --artifact-id` records a successful run into a typed,
+  versioned, parameterized `CapabilityArtifact` (`artifact_recorder.py`), with per-run evidence
+  (log, screenshots, redacted transcript) written to `evidence/<run_id>/`. Its checkpoint never
+  encodes a value the page reports, so one artifact replays for any input (see `REPORT.md`'s
+  Artifact schema section); the recorder refuses to save one that would only work for the input it
+  was recorded with.
 - **Replay** - executes a saved artifact deterministically, no LLM involved, classifying the
   outcome as `success` / `business_outcome` / `recoverable_then_success` / `hard_failure`.
 - **Escalation** (`escalation/manager.py`) - a state machine
@@ -76,11 +79,14 @@ python -m http.server 8000 --directory fixtures
 In another, to run discovery:
 
 ```
-python -m capability_forge.discover --goal "Look up the balance for member 12345" --target "http://127.0.0.1:8000/hostile_legacy_page.html"
+python -m capability_forge.discover --goal "Log in with username jdoe and password demo-password, then look up the balance for member 12345" --target "http://127.0.0.1:8000/hostile_legacy_page.html" --artifact-id my_fixture_balance --param member_id=12345
 ```
 
 Prints the stop reason, every step the agent took (with its risk classification), and the
-verified checkpoint once the run completes. `--headless` runs without a visible browser window;
+verified checkpoint once the run completes, then saves the run as `artifacts/my_fixture_balance.json`
+with `12345` replaced by a `{{member_id}}` input (`--param NAME=VALUE`, repeatable, names which
+literal values in the goal are inputs). Without `--artifact-id` the run is only printed. If the run
+can't be recorded as something that replays for other inputs, it says why and saves nothing. `--headless` runs without a visible browser window;
 omit it to watch the run happen. `--max-steps` and `--timeout-seconds` override the loop's
 defaults (25 steps, 180 seconds) if needed. `--no-escalation` disables the human-in-the-loop pause
 (on by default) for a scripted/CI context with no operator available to answer a prompt. No live
@@ -95,6 +101,7 @@ of re-discovered:
 python -m capability_forge.replay --artifact artifacts/fixture_check_account_balance.json --params '{"member_id": "12345"}'
 ```
 
+The same artifact works for any member: `{"member_id": "67890"}` returns that member's `$250.75`.
 Prints the run's status (`success`, `business_outcome`, `recoverable_then_success`, or
 `hard_failure`), any extracted outputs, and a per-step outcome breakdown. `--confirm-risky`
 authorizes any risky_irreversible step in the artifact to run without a separate confirmation
@@ -103,22 +110,29 @@ non-zero on `hard_failure`, so it's usable as a scripted health check. `artifact
 is a second real example recorded against ParaBank's live demo site instead of the bundled
 fixture - replaying it needs live network access to parabank.parasoft.com, so it isn't part of this
 fully-offline demo path. It takes the ParaBank login as inputs, passed the same way:
-`--params '{"username": "...", "password": "..."}'` (never via `.env`).
+`--params '{"username": "...", "password": "..."}'` (never via `.env`). It was recorded before
+checkpoints became value-independent, so its checkpoint still expects the exact balance it saw
+(`$515.50`) until it is re-recorded.
 
 To see the hard_failure path for real, replay the same artifact with `--params '{"member_id": "00000"}'`
 instead - `00000` is the fixture's own deterministic trigger for a simulated backend error
 (`SYS-500`), so the checkpoint never resolves and the run reports `hard_failure` with the failed
-step, expected/observed state, and a screenshot of the actual error.
+step, expected/observed state, and a screenshot of the actual error. `88888` also hard-fails, for a
+different reason: that member's lookup shows a session pop-up first, a path the recorded flow never
+saw, and replay doesn't improvise past it.
 
 To measure an artifact's reliability for real (stretch goal) - runs it N independent times against
-N fresh pages and writes the aggregate pass rate/timing back onto the artifact file:
+N fresh pages for each input set and writes the aggregate pass rate/timing back onto the artifact
+file:
 
 ```
-python -m scripts.run_stability_check --artifact artifacts/fixture_check_account_balance.json --params '{"member_id": "12345"}'
+python -m scripts.run_stability_check --artifact artifacts/fixture_check_account_balance.json --params '{"member_id": "12345"}' --params '{"member_id": "67890"}'
 ```
 
-`artifacts/fixture_check_account_balance.json` already carries real reliability data from a run of
-this, not a placeholder - `pass_rate: 1.0` over 5 independent runs.
+`artifacts/fixture_check_account_balance.json` already carries real reliability data from exactly
+this command, not a placeholder - `pass_rate: 1.0` over 10 independent runs across 2 input sets.
+More than one input set is the point: a pass rate over the recorded input alone only shows the flow
+repeats, not that the artifact is parameterized.
 
 To run the agent-facing capability API (stretch goal) with the fixture server still up:
 
@@ -141,11 +155,15 @@ Every claim above has a real, checked-in example backing it, not just a descript
   and also the fresh, clean run recorded after the credential-leak fix described in `REPORT.md`'s
   Safety section - it's the artifact proving that fix actually works, not just the writeup's word
   for it.
-- **Replay success** - `evidence/replay_1786951099/`, produced by the exact replay command above,
-  against the bundled fixture.
-- **Replay hard_failure** - `evidence/replay_1786951120/`, produced by the exact `member_id=00000`
-  command above - `screenshots/step_06.png` shows the actual SYS-500 error state at the point of
-  failure.
+- **Discovery recording the fixture artifact** - `evidence/discovery_1790895886/`, the run that
+  produced `artifacts/fixture_check_account_balance.json` via `--artifact-id` and
+  `--param member_id=12345`.
+- **Replay success, one artifact, two members** - `evidence/replay_1790896213/` (12345, `$4500.00`)
+  and `evidence/replay_1790896236/` (67890, `$250.75`), produced by the exact replay command above.
+- **Replay hard_failure** - `evidence/replay_1790896258/`, produced by the exact `member_id=00000`
+  command above with no operator attached - `screenshots/step_07.png` shows the actual SYS-500
+  error state, and `handoffs.jsonl` records the escalation as an automatic abort, not a human
+  decision.
 - **Escalation firing end to end** - two different trigger conditions, each with its own real
   bundle:
   - Discovery's dead-end guard (a run that gets stuck, pauses, a human resumes it, and it goes on
@@ -154,7 +172,7 @@ Every claim above has a real, checked-in example backing it, not just a descript
     that one - only the LLM's and the operator's decisions are scripted, for reproducibility; the
     state machine and handoff mechanics are the same production path a live run uses.
   - Replay's `hard_failure` trigger, fully live and unscripted - `evidence/replay_1787003705/`,
-    produced by the exact `member_id=00000` command above, responded to by hand at a real
+    produced by the `member_id=00000` command above against the earlier (schema 1.0) fixture artifact, responded to by hand at a real
     terminal prompt. Nothing about this one is scripted: `handoffs.jsonl` has a real timestamped
     decision (`resume`), with a genuine typo in the notes field no generator would produce.
 

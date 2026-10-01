@@ -1,109 +1,137 @@
 {
   "artifact_id": "fixture_check_account_balance",
-  "schema_version": "1.0",
-  "created_at": "2026-08-17T07:01:50.498303Z",
+  "schema_version": "1.1",
+  "created_at": "2026-10-01T23:05:41.500502Z",
   "target": {
     "base_url": "http://127.0.0.1:8000/hostile_legacy_page.html",
     "app_name": "legacy_bank",
     "tenant_overrides": null
   },
-  "goal_description": "Look up the balance for a given member id",
+  "goal_description": "Log in with username jdoe and password demo-password, then look up the balance for member {{member_id}}",
   "inputs": [
     {
       "name": "member_id",
       "type": "string",
       "required": true,
-      "description": "The member id to look up."
+      "description": "Value substituted for {{member_id}}."
     }
   ],
   "outputs": [
     {
       "name": "balance",
       "type": "string",
-      "description": "The member's account balance as shown on the page."
+      "description": "Read at the checkpoint (currency).",
+      "format": "currency",
+      "example": "$4500.00"
     }
   ],
   "steps": [
     {
-      "step_id": "s1",
+      "step_id": "step_1",
       "action_type": "type",
       "locators": [
         {
           "strategy": "role",
           "value": "role=textbox[name=\"User Name:\"]",
           "confidence": 0.9
+        },
+        {
+          "strategy": "css",
+          "value": "#txtUserName",
+          "confidence": 0.6
         }
       ],
       "input_value": "jdoe",
       "risk": "safe_reversible",
-      "description": "Enter username"
+      "description": "Enter the username to log in."
     },
     {
-      "step_id": "s2",
+      "step_id": "step_2",
       "action_type": "type",
       "locators": [
         {
           "strategy": "role",
           "value": "role=textbox[name=\"Password:\"]",
           "confidence": 0.9
+        },
+        {
+          "strategy": "css",
+          "value": "#txtPassword",
+          "confidence": 0.6
         }
       ],
       "input_value": "demo-password",
       "risk": "safe_reversible",
-      "description": "Enter password"
+      "description": "Enter the password to log in."
     },
     {
-      "step_id": "s3",
+      "step_id": "step_3",
       "action_type": "click",
       "locators": [
         {
           "strategy": "role",
           "value": "role=button[name=\"Login\"]",
           "confidence": 0.9
+        },
+        {
+          "strategy": "css",
+          "value": "#btnLogin",
+          "confidence": 0.6
         }
       ],
       "input_value": null,
       "risk": "safe_reversible",
-      "description": "Submit login"
+      "description": "Submit login credentials."
     },
     {
-      "step_id": "s4",
+      "step_id": "step_4",
       "action_type": "type",
       "locators": [
         {
           "strategy": "role",
           "value": "role=textbox[name=\"Member ID:\"]",
           "confidence": 0.9
+        },
+        {
+          "strategy": "css",
+          "value": "#txtMemberId",
+          "confidence": 0.6
         }
       ],
       "input_value": "{{member_id}}",
       "risk": "safe_reversible",
-      "description": "Enter member id"
+      "description": "Enter member ID to search balance."
     },
     {
-      "step_id": "s5",
+      "step_id": "step_5",
       "action_type": "click",
       "locators": [
         {
           "strategy": "role",
           "value": "role=button[name=\"Search\"]",
           "confidence": 0.9
+        },
+        {
+          "strategy": "css",
+          "value": "#btnSearch",
+          "confidence": 0.6
         }
       ],
       "input_value": null,
       "risk": "safe_reversible",
-      "description": "Search"
+      "description": "Search for the member balance."
     }
   ],
   "checkpoint": {
-    "description": "Balance shown",
+    "description": "Member detail page displaying the member's name, account number, and current balance after a successful search.",
     "locator": {
       "strategy": "role",
-      "value": "role=cell[name=\"$4500.00\"]",
+      "value": "role=cell[name=\"Current Balance:\"]",
       "confidence": 0.9
     },
+    "identity": null,
     "extract": {
-      "balance": "css=.balance-value"
+      "balance": "role=row[name=/^Current Balance:/] >> role=cell >> nth=1"
     }
   },
   "risk_summary": "safe",
@@ -111,8 +139,9 @@
   "business_outcome_reason": null,
   "reliability": {
     "pass_rate": 1.0,
-    "avg_duration_ms": 20188.13534141518,
-    "sample_size": 5,
-    "last_checked": "2026-08-17T07:28:54.351030Z"
+    "avg_duration_ms": 20235.240604169667,
+    "sample_size": 10,
+    "last_checked": "2026-10-01T23:10:02.130817Z",
+    "distinct_param_sets": 2
   }
 }

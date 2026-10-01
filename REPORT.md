@@ -53,25 +53,43 @@ The three fields that carry the actual design argument (full schema:
 ```python
 locators: list[LocatorTier]       # tried in order, per step; empty only for navigate
 risk: Literal["safe_reversible", "risky_irreversible"]   # lives on the step, not the artifact
-checkpoint.extract: dict[str, str] | None                # named outputs read here, and only here
+checkpoint: locator, identity, extract                   # three jobs, three fields (below)
 ```
 
 Locators are a list, not a single value, so replay can fall back through tiers - the concrete
 mechanism behind "self-healing" locator resolution. `input_value` templates on `{{param}}` so one
 artifact serves many invocations without re-recording. `risk` lives on the step, not just the
 artifact, since a single artifact can mix safe reads and one risky write, and the guardrail needs
-per-step granularity. `checkpoint.extract` is where declared outputs are actually read - "how do I
-know I succeeded" and "what do I return" are kept as one verification step rather than two that
-could drift apart, enforced by a cross-field validator at load time. `expected_outcome_type` was
-added mid-build: a `business_outcome` checkpoint (a named, expected non-error result) resolves
-identically to a `success` checkpoint at replay time, so there was no way to tell them apart
-without the artifact self-declaring which one it is.
+per-step granularity. `expected_outcome_type` was added mid-build: a `business_outcome` checkpoint
+(a named, expected non-error result) resolves identically to a `success` checkpoint at replay
+time, so there was no way to tell them apart without the artifact self-declaring which one it is.
 
-`reliability` is no longer a described-but-empty field. `artifacts/fixture_check_account_balance.json`
-carries real measured data - `pass_rate: 1.0`, `sample_size: 5` - from an actual run of the
-multi-run stability check (`replay/reliability.py`), which replays an artifact N times against N
-independently created and closed pages, not one page reused, because the isolation needs to match
-what a real invocation gets for the number to mean anything.
+**The checkpoint was the one part not actually parameterized, found in a second review pass.**
+Every locator is role + accessible name, and a data cell's accessible name *is* its data, so the
+fixture artifact's checkpoint was `role=cell[name="$4500.00"]`: it replayed for member 12345 and
+hard-failed for 67890, a valid member with a different balance. Its `pass_rate: 1.0` was true and
+uninformative, since the stability check only replayed the recorded input. One locator was doing
+three jobs, and value equality was only an accidental proxy for "same entity":
+
+| Job | Schema 1.0 | Schema 1.1 |
+|---|---|---|
+| Reached the right screen | the value cell is present | a label is present: `role=cell[name="Current Balance:"]` |
+| For the right entity | accidental: same value, probably same member | `checkpoint.identity`, bound to an input: `role=cell[name="{{account_id}}"]` |
+| Read the value | the same value-bound locator | located by its label, never by its value; checked against a declared `format` |
+
+The rule: literal text in a selector is for UI chrome (labels, headings, fixed messages), never for
+data. It is enforced, not documented: the recorder refuses any locator containing an input or
+output value, and the schema rejects a checkpoint containing an output's recorded `example`, so
+this class of artifact can no longer be saved. The residual cost is honest: where the final page
+shows no input value (the fixture's detail view shows name and balance, not member ID), identity
+can't be bound, and the checkpoint proves "right screen, well-formed value", not "right member".
+`artifacts/parabank_check_account_balance.json` predates this and still has a value-bound
+checkpoint (`$515.50`) until it is re-recorded.
+
+`reliability` now measures the claim itself: the re-recorded fixture artifact carries
+`pass_rate: 1.0` over 10 runs across 2 input sets (`distinct_param_sets: 2`), each against an
+independently created and closed page (`replay/reliability.py`), because the isolation needs to
+match what a real invocation gets for the number to mean anything.
 
 ## Determinism & error handling
 
@@ -89,12 +107,14 @@ recorded with, but still resolved.
 
 Replay only ever produces the third, since it has no LLM to improvise the other two - stated
 explicitly in `outcome_classifier.py`'s own docstring rather than left to imply replay can detect
-an unexpected pop-up screen, which it structurally cannot.
+an unexpected pop-up screen, which it structurally cannot. Concretely, member 88888 (whose lookup
+shows a session pop-up first) replays as `hard_failure`, because the recorded flow never saw it.
 
-Real, checked-in evidence for the taxonomy: `evidence/replay_1786951099/` (plain success),
-`evidence/replay_1786951120/` (`hard_failure`, via the fixture's own deliberately unrecoverable
-`SYS-500` trigger, built specifically to prove replay detects and reports failure correctly rather
-than masking it - `screenshots/step_06.png` shows the actual error state).
+Real, checked-in evidence for the taxonomy, all from the one fixture artifact:
+`evidence/replay_1790896213/` and `evidence/replay_1790896236/` (success for two different
+members), `evidence/replay_1790896258/` (`hard_failure`, via the fixture's own deliberately
+unrecoverable `SYS-500` trigger, built specifically to prove replay detects and reports failure
+correctly rather than masking it - `screenshots/step_07.png` shows the actual error state).
 
 Separately, the locator-fallback tier proved itself against a real, unplanned failure too:
 ParaBank's real login form has two `<input>` fields with no accessible name at all (no
@@ -148,10 +168,11 @@ live browser session (non-headless), the state machine, and the `HandoffRecord` 
 `evidence/discovery_1786949371/`, a run that trips the dead-end guard three times, pauses, is
 resumed, and goes on to actually complete the goal - not a pause-then-give-up (only the LLM's and
 the operator's decisions are scripted there, for reproducibility; everything else is the same
-production code path a live invocation uses). At `evidence/replay_1787003705/`, a `hard_failure`
-escalation run with nothing scripted at all - a real terminal session, paused on a real `input()`
-call, resumed by a real typed decision; `handoffs.jsonl` carries a genuine typo in the notes field
-("clicked on search buttom") that no generator produces.
+production code path a live invocation uses). At `evidence/replay_1787003705/` (recorded against
+the schema 1.0 fixture artifact), a `hard_failure` escalation run with nothing scripted at all - a
+real terminal session, paused on a real `input()` call, resumed by a real typed decision;
+`handoffs.jsonl` carries a genuine typo in the notes field ("clicked on search buttom") that no
+generator produces.
 
 ## Safety
 
@@ -168,6 +189,9 @@ Known limitations, stated plainly rather than implied to be fully covered:
 - **Risk classification trusts the model's self-tag unless a keyword overrides it.** Escalate-only
   is a real guarantee (nothing talks a genuinely risky action back down to safe), not a complete
   one - a risky action phrased outside the configured keyword list silently stays self-tagged.
+- **Discovery guesses a login it wasn't given** - on the fixture, which accepts any login, it tried
+  `admin`/`admin` tagged `safe_reversible`, harmless there but able to lock a real account, so a
+  goal should always supply the credentials.
 - **Redaction has two named gaps.** Field-name matching is exact (`acct_num` isn't caught by
   name); neither layer parses structured data embedded inside a string value - confirmed a
   non-issue for this schema today, re-examine if that changes.

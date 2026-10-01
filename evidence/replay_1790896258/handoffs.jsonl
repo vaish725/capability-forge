@@ -1,0 +1,1 @@
+{"run_id": "replay_1790896258", "reason": "hard_failure", "step_id": "checkpoint", "description": "Checkpoint not reached: checkpoint locator not found: 'role=cell[name=\"Current Balance:\"]'", "decision": "abort", "notes": "auto-abort: no operator input (stdin closed)", "taken_at": "2026-10-01T23:11:40Z", "released_at": "2026-10-01T23:11:40Z"}
