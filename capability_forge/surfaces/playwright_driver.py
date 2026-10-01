@@ -215,8 +215,11 @@ class PlaywrightDriver:
 
         if checkpoint.identity is not None:
             identity_selector = render_selector(checkpoint.identity, params or {})
-            if self._find_unique(identity_selector) is None:
+            identity_locator = self._find_unique(identity_selector)
+            if identity_locator is None:
                 raise CheckpointNotReachedError(f"checkpoint identity not found for this run's inputs: {identity_selector!r}")
+            if self.is_form_field(identity_locator):
+                raise CheckpointNotReachedError(f"checkpoint identity {identity_selector!r} is a form field echoing this run's own input, not the page reporting which record it shows")
 
         output_formats = output_formats or {}
         outputs: dict[str, str] = {}
@@ -230,6 +233,17 @@ class PlaywrightDriver:
                 raise CheckpointNotReachedError(f"declared output {name!r} read {value!r}, which is not a valid {output_format}")
             outputs[name] = value
         return outputs
+
+    @staticmethod
+    def is_form_field(locator: Locator) -> bool:
+        """True if the element is, or contains, an editable field. Its accessible name then
+        includes whatever was typed into it, so matching an input value there proves only that the
+        run typed it - found live: a recorded identity of role=cell[name="{{member_id}}"] matched
+        the search box's own cell, and so passed for any member."""
+        return locator.evaluate(
+            "el => { const f = 'input, textarea, select, [contenteditable=\"true\"]';"
+            " return el.matches(f) || el.querySelector(f) !== null; }"
+        )
 
     def derive_value_locator(self, value_locator: Locator) -> str | None:
         """Given an element holding a value read off the page, build a selector that finds the

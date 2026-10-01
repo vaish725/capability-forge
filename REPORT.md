@@ -81,8 +81,8 @@ The rule: literal text in a selector is for UI chrome (labels, headings, fixed m
 data. It is enforced, not documented: the recorder refuses any locator containing an input or
 output value, and the schema rejects a checkpoint containing an output's recorded `example`, so
 this class of artifact can no longer be saved. The residual cost is honest: where the final page
-shows no input value (the fixture's detail view shows name and balance, not member ID), identity
-can't be bound, and the checkpoint proves "right screen, well-formed value", not "right member".
+shows no input value (the fixture's detail view shows name and balance, not member ID; a search
+box still showing the typed ID is rejected, since it only echoes the input), identity can't be bound, and the checkpoint proves "right screen, well-formed value", not "right member".
 `artifacts/parabank_check_account_balance.json` predates this and still has a value-bound
 checkpoint (`$515.50`) until it is re-recorded.
 

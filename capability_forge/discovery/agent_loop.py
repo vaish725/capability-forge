@@ -223,7 +223,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "identity_role": {
                     "type": "string",
-                    "description": "Optional: ARIA role of an element on this final page that shows the specific identifier from your goal (e.g. the account or member number you were asked about), proving this is that record's page. Leave out if the page doesn't show it.",
+                    "description": "Optional: ARIA role of an element on this final page that displays the specific identifier from your goal (e.g. the account or member number you were asked about) as part of the record shown, proving this is that record's page. Not a form field or search box you typed it into. Leave out if the page doesn't display it.",
                 },
                 "identity_name": {"type": "string", "description": "Accessible name of that identifier element. Required with identity_role."},
                 "identity_nth": {"type": "integer", "description": "Only needed if multiple elements share the identity role and name."},
@@ -680,11 +680,20 @@ class AgentLoop:
         if identity_role:
             identity_name = tool_input.get("identity_name", "")
             identity_nth = tool_input.get("identity_nth")
-            if self.driver.resolve_role_name(identity_role, identity_name, identity_nth) is None:
+            identity_locator = self.driver.resolve_role_name(identity_role, identity_name, identity_nth)
+            if identity_locator is None:
                 return _ToolDispatchResult(
                     tool_result_text=(
                         f"Could not verify the identity element: no element found with role={identity_role!r} "
                         f"name={identity_name!r} nth={identity_nth!r}. Fix it or leave identity out, and call done again."
+                    )
+                )
+            if self.driver.is_form_field(identity_locator):
+                return _ToolDispatchResult(
+                    tool_result_text=(
+                        f"Not accepted: the identity element {identity_name!r} is or contains a form field, so it only "
+                        "shows what was typed into it, not which record the page is displaying. Use text the page "
+                        "itself displays about the record, or leave identity out, and call done again."
                     )
                 )
             identity = role_name_selector(identity_role, identity_name, identity_nth)

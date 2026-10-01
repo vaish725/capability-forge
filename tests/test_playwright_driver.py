@@ -344,6 +344,17 @@ def test_verify_checkpoint_identity_param_cannot_break_out_of_the_selector(drive
         driver.verify_checkpoint(checkpoint, params={"member_name": 'x"] , role=cell[name="Jane Doe'})
 
 
+def test_verify_checkpoint_rejects_an_identity_that_is_a_form_field_echoing_the_input(driver):
+    # Found live: a recording bound identity to role=cell[name="{{member_id}}"], which matched the
+    # search box's own cell (its accessible name includes the typed value) and so passed for any
+    # member without saying anything about which record the page shows.
+    login_via_driver(driver)
+    search_via_driver(driver, "67890")
+    checkpoint = value_independent_checkpoint(identity='role=cell[name="{{member_id}}"]')
+    with pytest.raises(CheckpointNotReachedError, match="form field"):
+        driver.verify_checkpoint(checkpoint, params={"member_id": "67890"})
+
+
 def test_verify_checkpoint_rejects_a_value_that_does_not_match_its_format(driver):
     login_via_driver(driver)
     search_via_driver(driver, "12345")

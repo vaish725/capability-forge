@@ -585,6 +585,15 @@ def test_done_records_a_verified_identity_element(driver, guardrail, fixture_ser
     assert result.checkpoint.identity == 'role=cell[name="Jane Doe"]'
 
 
+def test_done_rejects_an_identity_that_is_the_search_box_echoing_the_input(driver, guardrail, fixture_server):
+    echo = ("done", {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "Current Balance:", "identity_role": "cell", "identity_name": "12345", "summary": "x"})
+    agent, client = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, echo, ("give_up", {"reason": "stop"})]))
+    result = agent.run("A goal", f"{fixture_server}/hostile_legacy_page.html")
+
+    assert result.stop_reason == "give_up"
+    assert "form field" in client.calls[-1]["messages"][-2]["content"][0]["content"]
+
+
 def test_done_with_an_identity_element_that_is_not_on_the_page_is_not_accepted(driver, guardrail, fixture_server):
     bad = ("done", {"outcome_type": "success", "checkpoint_role": "cell", "checkpoint_name": "Current Balance:", "identity_role": "cell", "identity_name": "Nobody", "summary": "x"})
     agent, client = loop(driver, guardrail, scripted([*LOGIN_AND_SEARCH_12345, bad, ("give_up", {"reason": "stop"})]))
