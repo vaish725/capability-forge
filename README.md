@@ -164,6 +164,11 @@ Every claim above has a real, checked-in example backing it, not just a descript
   command above with no operator attached - `screenshots/step_07.png` shows the actual SYS-500
   error state, and `handoffs.jsonl` records the escalation as an automatic abort, not a human
   decision.
+- **Same replay paths, earlier artifact** - `evidence/replay_1786951099/` (success) and
+  `evidence/replay_1786951120/` (`hard_failure`, `screenshots/step_06.png`), produced by the same
+  commands against the schema 1.0 fixture artifact, before its checkpoint was made
+  value-independent. Kept as the before-state: identical outcomes for member 12345, which is why
+  the checkpoint flaw didn't show until another member was tried.
 - **Escalation firing end to end** - two different trigger conditions, each with its own real
   bundle:
   - Discovery's dead-end guard (a run that gets stuck, pauses, a human resumes it, and it goes on

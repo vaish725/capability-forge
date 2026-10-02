@@ -64,12 +64,10 @@ per-step granularity. `expected_outcome_type` was added mid-build: a `business_o
 (a named, expected non-error result) resolves identically to a `success` checkpoint at replay
 time, so there was no way to tell them apart without the artifact self-declaring which one it is.
 
-**The checkpoint was the one part not actually parameterized, found in a second review pass.**
-Every locator is role + accessible name, and a data cell's accessible name *is* its data, so the
-fixture artifact's checkpoint was `role=cell[name="$4500.00"]`: it replayed for member 12345 and
-hard-failed for 67890, a valid member with a different balance. Its `pass_rate: 1.0` was true and
-uninformative, since the stability check only replayed the recorded input. One locator was doing
-three jobs, and value equality was only an accidental proxy for "same entity":
+**The checkpoint was the one part not actually parameterized, found in a second review pass.** A
+data cell's accessible name *is* its data, so the fixture checkpoint was `role=cell[name="$4500.00"]`:
+it hard-failed for member 67890, and its `pass_rate: 1.0` only ever covered the recorded input. One
+locator was doing three jobs, with value equality an accidental proxy for "same entity":
 
 | Job | Schema 1.0 | Schema 1.1 |
 |---|---|---|
@@ -77,19 +75,16 @@ three jobs, and value equality was only an accidental proxy for "same entity":
 | For the right entity | accidental: same value, probably same member | `checkpoint.identity`, bound to an input: `role=cell[name="{{account_id}}"]` |
 | Read the value | the same value-bound locator | located by its label, never by its value; checked against a declared `format` |
 
-The rule: literal text in a selector is for UI chrome (labels, headings, fixed messages), never for
-data. It is enforced, not documented: the recorder refuses any locator containing an input or
-output value, and the schema rejects a checkpoint containing an output's recorded `example`, so
-this class of artifact can no longer be saved. The residual cost is honest: where the final page
-shows no input value (the fixture's detail view shows name and balance, not member ID; a search
-box still showing the typed ID is rejected, since it only echoes the input), identity can't be bound, and the checkpoint proves "right screen, well-formed value", not "right member".
-`artifacts/parabank_check_account_balance.json` predates this and still has a value-bound
-checkpoint (`$515.50`) until it is re-recorded.
+Literal text in a selector is for UI chrome, never data - enforced, not documented: the recorder
+refuses any locator containing an input or output value, and the schema rejects a checkpoint
+containing an output's recorded `example`. The residual cost: where the final page shows no input
+value (the fixture's shows name and balance, not member ID; a search box echoing the typed ID is
+rejected), identity can't be bound, so the checkpoint proves "right screen, well-formed value", not
+"right member". The ParaBank artifact predates this and keeps a value-bound checkpoint (`$515.50`)
+until it is re-recorded.
 
-`reliability` now measures the claim itself: the re-recorded fixture artifact carries
-`pass_rate: 1.0` over 10 runs across 2 input sets (`distinct_param_sets: 2`), each against an
-independently created and closed page (`replay/reliability.py`), because the isolation needs to
-match what a real invocation gets for the number to mean anything.
+`reliability` now covers the claim itself: `pass_rate: 1.0` over 10 runs across 2 input sets
+(`distinct_param_sets: 2`), each on a fresh page to match a real invocation's isolation.
 
 ## Determinism & error handling
 
@@ -192,9 +187,12 @@ Known limitations, stated plainly rather than implied to be fully covered:
 - **Discovery guesses a login it wasn't given** - on the fixture, which accepts any login, it tried
   `admin`/`admin` tagged `safe_reversible`, harmless there but able to lock a real account, so a
   goal should always supply the credentials.
-- **Redaction has two named gaps.** Field-name matching is exact (`acct_num` isn't caught by
+- **Redaction has three named gaps.** Field-name matching is exact (`acct_num` isn't caught by
   name); neither layer parses structured data embedded inside a string value - confirmed a
-  non-issue for this schema today, re-examine if that changes.
+  non-issue for this schema today, re-examine if that changes; and a sensitive value is masked
+  only under its field name or once typed during the run, so one the page itself displays in free
+  text is written as-is (`evidence/discovery_1786935840/` shows account number 13566 in page URLs
+  and snapshots, 23 times).
 - **`register_secret()` only catches a value the system already knew about in advance.** It closed
   a real leak (a typed value resurfacing unprompted in a later page observation - see below), but
   can't recognize a brand-new secret introduced somewhere it never saw first, concretely a password
