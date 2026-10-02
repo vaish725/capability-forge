@@ -109,10 +109,17 @@ prompt; `--no-escalation` and `--no-evidence` behave the same way they do for di
 non-zero on `hard_failure`, so it's usable as a scripted health check. `artifacts/parabank_check_account_balance.json`
 is a second real example recorded against ParaBank's live demo site instead of the bundled
 fixture - replaying it needs live network access to parabank.parasoft.com, so it isn't part of this
-fully-offline demo path. It takes the ParaBank login as inputs, passed the same way:
-`--params '{"username": "...", "password": "..."}'` (never via `.env`). It was recorded before
-checkpoints became value-independent, so its checkpoint still expects the exact balance it saw
-(`$515.50`) until it is re-recorded.
+fully-offline demo path. It takes the login and the account as inputs, passed the same way (never
+via `.env`); `john` / `demo` is ParaBank's own published demo login, so this runs as-is:
+
+```
+python -m capability_forge.replay --artifact artifacts/parabank_check_account_balance.json --params '{"username": "john", "password": "demo", "account_id": "12567"}'
+```
+
+It was recorded for account 12456 and returns any account's balance; its checkpoint also confirms
+the page shows the requested account number (`checkpoint.identity`), which the fixture's page
+can't offer. That shared demo account's balances change as other people use it, which is exactly
+what a value-independent checkpoint is for.
 
 To see the hard_failure path for real, replay the same artifact with `--params '{"member_id": "00000"}'`
 instead - `00000` is the fixture's own deterministic trigger for a simulated backend error
@@ -155,6 +162,14 @@ Every claim above has a real, checked-in example backing it, not just a descript
   and also the fresh, clean run recorded after the credential-leak fix described in `REPORT.md`'s
   Safety section - it's the artifact proving that fix actually works, not just the writeup's word
   for it.
+- **ParaBank, re-recorded and replayed for two accounts** - `evidence/discovery_1790900617/` (the
+  recording, `--param account_id=12456`), `evidence/replay_1790900640/` (12456, `$10.45`),
+  `evidence/replay_1790900644/` (12567, `$100.00`), `evidence/replay_1790900647/` (99999, no such
+  account: `hard_failure`). The artifact also carries `pass_rate: 1.0` over 10 live runs across
+  both accounts.
+- **The recorder refusing a value-bound run, live** - `evidence/discovery_1790900590/`: the agent
+  read the balance from the accounts table, whose only label in that row is the account number
+  itself, so any locator for it would contain the `account_id` input. Not saved.
 - **Discovery recording the fixture artifact** - `evidence/discovery_1790895886/`, the run that
   produced `artifacts/fixture_check_account_balance.json` via `--artifact-id` and
   `--param member_id=12345`.

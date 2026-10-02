@@ -80,8 +80,11 @@ refuses any locator containing an input or output value, and the schema rejects 
 containing an output's recorded `example`. The residual cost: where the final page shows no input
 value (the fixture's shows name and balance, not member ID; a search box echoing the typed ID is
 rejected), identity can't be bound, so the checkpoint proves "right screen, well-formed value", not
-"right member". The ParaBank artifact predates this and keeps a value-bound checkpoint (`$515.50`)
-until it is re-recorded.
+"right member". ParaBank's page does show the account number, so its re-recorded artifact binds
+identity to `{{account_id}}` and replays any account's balance (`evidence/replay_1790900640/`,
+`evidence/replay_1790900644/`). One live recording was refused outright
+(`evidence/discovery_1790900590/`): it read the balance from a table row labeled only by the account
+number, so any locator for it would have contained the input.
 
 `reliability` now covers the claim itself: `pass_rate: 1.0` over 10 runs across 2 input sets
 (`distinct_param_sets: 2`), each on a fresh page to match a real invocation's isolation.
