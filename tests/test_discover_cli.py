@@ -177,3 +177,12 @@ def test_save_artifact_refuses_a_value_bound_run_and_writes_nothing(tmp_path, ca
     assert save_artifact(_completed_run(checkpoint_name="$4500.00"), _record_args(tmp_path), {"12345": "member_id"}) == 1
     assert not (tmp_path / "my_balance.json").exists()
     assert "Not recorded" in capsys.readouterr().err
+
+
+def test_malformed_param_error_never_echoes_the_value():
+    # A value-bearing malformed flag is most likely a credential; the message names the problem only.
+    with pytest.raises(ValueError) as excinfo:
+        parse_param_map(["=hunter2"])
+    assert "hunter2" not in str(excinfo.value)
+    with pytest.raises(ValueError, match="an empty value for 'username'"):
+        parse_param_map(["username="])

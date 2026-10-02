@@ -80,7 +80,10 @@ def parse_param_map(raw_params: list[str]) -> dict[str, str]:
     for raw in raw_params:
         name, sep, value = raw.partition("=")
         if not sep or not name or not value:
-            raise ValueError(f"--param must look like NAME=VALUE, got {raw!r}")
+            # Names only, never the raw flag: a param value can be a password, and an error
+            # message is printed straight to the terminal.
+            problem = "no '='" if not sep else "an empty name" if not name else f"an empty value for {name!r}"
+            raise ValueError(f"--param must look like NAME=VALUE, got one with {problem}")
         param_map[value] = name
     return param_map
 
