@@ -22,6 +22,7 @@ Deliberately out of scope for this thin layer, named rather than silently absent
     concurrent traffic would do.
 """
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,7 @@ def load_artifacts(directory: Path = ARTIFACTS_DIR) -> dict[str, CapabilityArtif
         try:
             artifact = CapabilityArtifact.load(path)
         except Exception as exc:  # noqa: BLE001 - any load/validation failure is equally "skip this one file"
-            print(f"Skipping {path}: {exc}")
+            print(f"Skipping {path}: {exc}", file=sys.stderr)
             continue
         registry[artifact.artifact_id] = artifact
     return registry

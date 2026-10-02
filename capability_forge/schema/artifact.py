@@ -47,6 +47,14 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+# Every schema version this code can replay correctly, oldest first; the last is what discovery
+# records. 1.1 only added optional fields (checkpoint.identity, OutputField.format/example,
+# ReliabilityInfo.distinct_param_sets), so a 1.0 artifact replays unchanged. Anything else is
+# refused at load time: a well-formed version string from a newer schema could mean different
+# replay semantics, and running it anyway would fail somewhere less obvious than here.
+SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = ("1.0", "1.1")
+CURRENT_SCHEMA_VERSION = SUPPORTED_SCHEMA_VERSIONS[-1]
+
 # Matches "{{param_name}}" style placeholders used inside StepAction.input_value.
 # Shared as a module-level constant so the replay engine substitutes against the exact same
 # pattern this schema validates against, instead of maintaining a second copy.
@@ -276,7 +284,7 @@ class CapabilityArtifact(BaseModel):
 
     # Lowercase snake_case identifier: used as both a lookup key and a filename on disk.
     artifact_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    schema_version: str = Field(pattern=r"^\d+\.\d+$")  # e.g. "1.0"
+    schema_version: str = Field(pattern=r"^\d+\.\d+$")  # e.g. "1.0"; must be in SUPPORTED_SCHEMA_VERSIONS
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     target: TargetSpec
     goal_description: str = Field(min_length=1)  # the original NL goal this was recorded from
@@ -295,6 +303,16 @@ class CapabilityArtifact(BaseModel):
     expected_outcome_type: Literal["success", "business_outcome"]
     business_outcome_reason: str | None = None
     reliability: ReliabilityInfo | None = None  # populated by the multi-run stability check
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_version_is_supported(cls, value: str) -> str:
+        if value not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(
+                f"schema_version {value!r} is not supported by this code (supported: {', '.join(SUPPORTED_SCHEMA_VERSIONS)}); "
+                "it was probably recorded by a different version of capability-forge"
+            )
+        return value
 
     @model_validator(mode="after")
     def _business_outcome_reason_matches_expected_outcome_type(self) -> "CapabilityArtifact":

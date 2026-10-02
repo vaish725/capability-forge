@@ -259,9 +259,17 @@ def test_invalid_schema_version_rejected(schema_version):
         build(schema_version=schema_version)
 
 
-def test_valid_schema_version_accepted():
-    artifact = build(schema_version="2.3")
-    assert artifact.schema_version == "2.3"
+@pytest.mark.parametrize("schema_version", ["1.0", "1.1"])
+def test_supported_schema_version_accepted(schema_version):
+    assert build(schema_version=schema_version).schema_version == schema_version
+
+
+@pytest.mark.parametrize("schema_version", ["2.3", "1.2", "0.9"])
+def test_well_formed_but_unsupported_schema_version_rejected_with_a_clear_message(schema_version):
+    # Before this check, any N.N string loaded, so an artifact from a future schema would have
+    # replayed on this code without a word.
+    with pytest.raises(ValidationError, match="not supported by this code"):
+        build(schema_version=schema_version)
 
 
 # --- cross-field: step_id / param / output name uniqueness -------------------------------------

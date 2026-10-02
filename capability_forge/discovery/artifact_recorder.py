@@ -55,12 +55,11 @@ from capability_forge.schema.artifact import (
     InputParam,
     OutputField,
     StepAction,
+    CURRENT_SCHEMA_VERSION,
     TargetSpec,
     extract_template_params,
     selector_contains_literal,
 )
-
-CURRENT_SCHEMA_VERSION = "1.1"  # 1.1 added checkpoint.identity, OutputField.format/example
 
 # stop_reason values with a verified checkpoint behind them - the only ones a run can be recorded
 # from. Anything else means the run never reached a confirmed terminal state.

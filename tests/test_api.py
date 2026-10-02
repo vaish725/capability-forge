@@ -188,7 +188,7 @@ def test_load_artifacts_skips_a_schema_invalid_file_rather_than_crashing(tmp_pat
     registry = load_artifacts(tmp_path)
 
     assert list(registry) == ["test_capability"]
-    assert "bad.json" in capsys.readouterr().out
+    assert "bad.json" in capsys.readouterr().err  # stderr, as load_artifacts documents
 
 
 def test_load_artifacts_ignores_non_json_files(tmp_path):
