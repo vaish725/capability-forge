@@ -619,11 +619,13 @@ def test_output_example_must_match_its_own_format():
 
 
 def test_schema_1_0_artifacts_without_new_fields_still_load():
-    # The committed ParaBank artifact predates 1.1 and must keep loading until it is re-recorded.
+    # The real ParaBank artifact as committed under schema 1.0 (kept from git history), so
+    # backward compatibility is checked against a file that actually existed, not a synthetic one.
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "artifacts" / "parabank_check_account_balance.json"
+    path = Path(__file__).resolve().parent / "data" / "schema_1_0_parabank_artifact.json"
     artifact = CapabilityArtifact.load(path)
+    assert artifact.schema_version == "1.0"
     assert artifact.checkpoint.identity is None
 
 

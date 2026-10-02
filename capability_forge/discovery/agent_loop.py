@@ -189,7 +189,7 @@ TOOLS: list[dict[str, Any]] = [
                 "output_format": {
                     "type": "string",
                     "enum": sorted(OUTPUT_FORMAT_PATTERNS),
-                    "description": "Required with output_name: what kind of value this is. Use 'text' if none of the others fit.",
+                    "description": "Required with output_name: what kind of value this is - currency for money amounts (e.g. '$1,234.56', '-$10.00'), integer for whole numbers, decimal for other numbers, date for dates, and text only if none of those fit. Replay checks every future value against it.",
                 },
             },
             "required": ["role", "name", "reasoning"],
