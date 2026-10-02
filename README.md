@@ -86,11 +86,12 @@ Prints the stop reason, every step the agent took (with its risk classification)
 verified checkpoint once the run completes, then saves the run as `artifacts/my_fixture_balance.json`
 with `12345` replaced by a `{{member_id}}` input (`--param NAME=VALUE`, repeatable, names which
 literal values in the goal are inputs). Without `--artifact-id` the run is only printed. If the run
-can't be recorded as something that replays for other inputs, it says why and saves nothing. `--headless` runs without a visible browser window;
-omit it to watch the run happen. `--max-steps` and `--timeout-seconds` override the loop's
-defaults (25 steps, 180 seconds) if needed. `--no-escalation` disables the human-in-the-loop pause
-(on by default) for a scripted/CI context with no operator available to answer a prompt. No live
-network dependency other than the Anthropic API call itself.
+can't be recorded as something that replays for other inputs, it says why and saves nothing.
+`--headless` runs without a visible browser window; omit it to watch the run happen. `--max-steps`
+and `--timeout-seconds` override the loop's defaults (25 steps, 180 seconds) if needed.
+`--no-escalation` disables the human-in-the-loop pause (on by default) for a scripted/CI context
+with no operator available to answer a prompt. No live network dependency other than the Anthropic
+API call itself.
 
 Or to replay a saved artifact against the same fixture, fully offline (no API key needed) - this
 one's `target.base_url` points at the local fixture server started above, so it's the same
@@ -101,16 +102,25 @@ of re-discovered:
 python -m capability_forge.replay --artifact artifacts/fixture_check_account_balance.json --params '{"member_id": "12345"}'
 ```
 
-The same artifact works for any member: `{"member_id": "67890"}` returns that member's `$250.75`.
 Prints the run's status (`success`, `business_outcome`, `recoverable_then_success`, or
-`hard_failure`), any extracted outputs, and a per-step outcome breakdown. `--confirm-risky`
+`hard_failure`), any extracted outputs, and a per-step outcome breakdown. The same artifact works
+for other members too: `{"member_id": "67890"}` returns that member's `$250.75`. `--confirm-risky`
 authorizes any risky_irreversible step in the artifact to run without a separate confirmation
 prompt; `--no-escalation` and `--no-evidence` behave the same way they do for discovery. Exits
-non-zero on `hard_failure`, so it's usable as a scripted health check. `artifacts/parabank_check_account_balance.json`
-is a second real example recorded against ParaBank's live demo site instead of the bundled
-fixture - replaying it needs live network access to parabank.parasoft.com, so it isn't part of this
-fully-offline demo path. It takes the login and the account as inputs, passed the same way (never
-via `.env`); `john` / `demo` is ParaBank's own published demo login, so this runs as-is:
+non-zero on `hard_failure`, so it's usable as a scripted health check.
+
+To see the hard_failure path for real, replay the same fixture artifact with
+`--params '{"member_id": "00000"}'` instead - `00000` is the fixture's own deterministic trigger
+for a simulated backend error (`SYS-500`), so the checkpoint never resolves and the run reports
+`hard_failure` with the failed step, expected/observed state, and a screenshot of the actual error.
+`88888` also hard-fails, for a different reason: that member's lookup shows a session pop-up first,
+a path the recorded flow never saw, and replay doesn't improvise past it.
+
+`artifacts/parabank_check_account_balance.json` is a second real example, recorded against
+ParaBank's live demo banking site instead of the bundled fixture - replaying it needs live network
+access to parabank.parasoft.com, so it isn't part of the fully-offline path above. It takes the
+login and the account as inputs, passed the same way (never via `.env`); `john` / `demo` is
+ParaBank's own published demo login, so this runs as-is:
 
 ```
 python -m capability_forge.replay --artifact artifacts/parabank_check_account_balance.json --params '{"username": "john", "password": "demo", "account_id": "12567"}'
@@ -120,13 +130,6 @@ It was recorded for account 12456 and returns any account's balance; its checkpo
 the page shows the requested account number (`checkpoint.identity`), which the fixture's page
 can't offer. That shared demo account's balances change as other people use it, which is exactly
 what a value-independent checkpoint is for.
-
-To see the hard_failure path for real, replay the same artifact with `--params '{"member_id": "00000"}'`
-instead - `00000` is the fixture's own deterministic trigger for a simulated backend error
-(`SYS-500`), so the checkpoint never resolves and the run reports `hard_failure` with the failed
-step, expected/observed state, and a screenshot of the actual error. `88888` also hard-fails, for a
-different reason: that member's lookup shows a session pop-up first, a path the recorded flow never
-saw, and replay doesn't improvise past it.
 
 To measure an artifact's reliability for real (stretch goal) - runs it N independent times against
 N fresh pages for each input set and writes the aggregate pass rate/timing back onto the artifact
@@ -155,21 +158,10 @@ mismatch 400s.
 
 ## Evidence
 
-Every claim above has a real, checked-in example backing it, not just a description:
+Every claim above has a real, checked-in example backing it, not just a description.
 
-- **Discovery success against the live target (ParaBank)** - `evidence/discovery_1786935840/`
-  (log, screenshots, redacted transcript). This is the assignment's required live discovery run,
-  and also the fresh, clean run recorded after the credential-leak fix described in `REPORT.md`'s
-  Safety section - it's the artifact proving that fix actually works, not just the writeup's word
-  for it.
-- **ParaBank, re-recorded and replayed for two accounts** - `evidence/discovery_1790900617/` (the
-  recording, `--param account_id=12456`), `evidence/replay_1790900640/` (12456, `$10.45`),
-  `evidence/replay_1790900644/` (12567, `$100.00`), `evidence/replay_1790900647/` (99999, no such
-  account: `hard_failure`). The artifact also carries `pass_rate: 1.0` over 10 live runs across
-  both accounts.
-- **The recorder refusing a value-bound run, live** - `evidence/discovery_1790900590/`: the agent
-  read the balance from the accounts table, whose only label in that row is the account number
-  itself, so any locator for it would contain the `account_id` input. Not saved.
+The fixture:
+
 - **Discovery recording the fixture artifact** - `evidence/discovery_1790895886/`, the run that
   produced `artifacts/fixture_check_account_balance.json` via `--artifact-id` and
   `--param member_id=12345`.
@@ -184,17 +176,34 @@ Every claim above has a real, checked-in example backing it, not just a descript
   commands against the schema 1.0 fixture artifact, before its checkpoint was made
   value-independent. Kept as the before-state: identical outcomes for member 12345, which is why
   the checkpoint flaw didn't show until another member was tried.
-- **Escalation firing end to end** - two different trigger conditions, each with its own real
-  bundle:
-  - Discovery's dead-end guard (a run that gets stuck, pauses, a human resumes it, and it goes on
-    to complete the goal) - `evidence/discovery_1786949371/`, against the bundled fixture. See
-    `scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about
-    that one - only the LLM's and the operator's decisions are scripted, for reproducibility; the
-    state machine and handoff mechanics are the same production path a live run uses.
-  - Replay's `hard_failure` trigger, fully live and unscripted - `evidence/replay_1787003705/`,
-    produced by the `member_id=00000` command above against the earlier (schema 1.0) fixture artifact, responded to by hand at a real
-    terminal prompt. Nothing about this one is scripted: `handoffs.jsonl` has a real timestamped
-    decision (`resume`), with a genuine typo in the notes field no generator would produce.
+
+ParaBank (live site):
+
+- **Discovery success against the live target** - `evidence/discovery_1786935840/` (log,
+  screenshots, redacted transcript). This is the assignment's required live discovery run, and also
+  the fresh, clean run recorded after the credential-leak fix described in `REPORT.md`'s Safety
+  section - it's the artifact proving that fix actually works, not just the writeup's word for it.
+- **Re-recorded and replayed for two accounts** - `evidence/discovery_1790900617/` (the recording,
+  `--param account_id=12456`), `evidence/replay_1790900640/` (12456, `$10.45`),
+  `evidence/replay_1790900644/` (12567, `$100.00`), `evidence/replay_1790900647/` (99999, no such
+  account: `hard_failure`). The artifact also carries `pass_rate: 1.0` over 10 live runs across
+  both accounts.
+- **The recorder refusing a value-bound run, live** - `evidence/discovery_1790900590/`: the agent
+  read the balance from the accounts table, whose only label in that row is the account number
+  itself, so any locator for it would contain the `account_id` input. Not saved.
+
+Escalation firing end to end, two different trigger conditions, each with its own real bundle:
+
+- **Discovery's dead-end guard** (a run that gets stuck, pauses, a human resumes it, and it goes on
+  to complete the goal) - `evidence/discovery_1786949371/`, against the bundled fixture. See
+  `scripts/generate_escalation_demo_evidence.py` for exactly what's real versus scripted about that
+  one - only the LLM's and the operator's decisions are scripted, for reproducibility; the state
+  machine and handoff mechanics are the same production path a live run uses.
+- **Replay's `hard_failure` trigger, fully live and unscripted** - `evidence/replay_1787003705/`,
+  produced by the `member_id=00000` command above against the earlier (schema 1.0) fixture
+  artifact, responded to by hand at a real terminal prompt. Nothing about this one is scripted:
+  `handoffs.jsonl` has a real timestamped decision (`resume`), with a genuine typo in the notes
+  field no generator would produce.
 
 ## Folder structure
 

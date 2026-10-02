@@ -29,10 +29,9 @@ a recorded step identifies which specific on-screen element to act on, not just 
 "tier" means trying progressively less reliable identification methods in that order, falling back
 only when an earlier one fails to resolve to exactly one element) - more engineering than raw CSS
 selectors, but it survives markup churn closer to how a human or screen-reader would. And the unit
-handed to a human on escalation is the Playwright browser
-context itself, which requires non-headless (or a live debug endpoint) for any run that might
-escalate - a real cost, accepted because it's what makes a mid-run handoff actually work rather
-than just be designed for.
+handed to a human on escalation is the Playwright browser context itself, which requires
+non-headless (or a live debug endpoint) for any run that might escalate - a real cost, accepted
+because it's what makes a mid-run handoff actually work rather than just be designed for.
 
 The `PlaywrightDriver` implementation confirmed that seam under real use rather than leaving it
 theoretical:
@@ -80,14 +79,16 @@ refuses any locator containing an input or output value, and the schema rejects 
 containing an output's recorded `example`. The residual cost: where the final page shows no input
 value (the fixture's shows name and balance, not member ID; a search box echoing the typed ID is
 rejected), identity can't be bound, so the checkpoint proves "right screen, well-formed value", not
-"right member". ParaBank's page does show the account number, so its re-recorded artifact binds
-identity to `{{account_id}}` and replays any account's balance (`evidence/replay_1790900640/`,
-`evidence/replay_1790900644/`). One live recording was refused outright
-(`evidence/discovery_1790900590/`): it read the balance from a table row labeled only by the account
-number, so any locator for it would have contained the input.
+"right member". Where the page does show it, identity is bound: ParaBank's account page shows the
+account number, so that artifact checks `{{account_id}}` and returns the right balance for each
+account (`evidence/replay_1790900640/`, `evidence/replay_1790900644/`). The recorder's refusal is
+not theoretical either: one live ParaBank recording read the balance from a table row labeled only
+by the account number, so any locator for it would have contained the input, and nothing was saved
+(`evidence/discovery_1790900590/`).
 
-`reliability` now covers the claim itself: `pass_rate: 1.0` over 10 runs across 2 input sets
-(`distinct_param_sets: 2`), each on a fresh page to match a real invocation's isolation.
+`reliability` now covers the claim itself: both artifacts carry `pass_rate: 1.0` over 10 runs
+across 2 input sets (`distinct_param_sets: 2`), each on a fresh page to match a real invocation's
+isolation.
 
 ## Determinism & error handling
 
@@ -222,7 +223,9 @@ window before the fix, nor does it guarantee every cached view on GitHub's side 
 does support a request process for that, which exists precisely for this scenario). The
 regenerated run, all three fixes active simultaneously, is checked in at
 `evidence/discovery_1786935840/` - the same bundle README's Evidence section lists as the required
-live-target discovery run, so the fix is independently verifiable rather than asserted here.
+live-target discovery run, so the fix is independently verifiable rather than asserted here. The
+current ParaBank artifact was later re-recorded with ParaBank's own published demo login, so it
+carries no private credential at all.
 
 ## Cuts
 
@@ -232,8 +235,8 @@ live-target discovery run, so the fix is independently verifiable rather than as
   build CDP exposure first if that changed.
 - **Lower-priority stretch goals**, deprioritized per the design's own instruction to stop after
   the priority stretch goals unless clearly ahead of schedule. Confidence & approval gating (a
-  `draft`/`approved` state gated on
-  `reliability.pass_rate`, `invoke()` refusing `draft` without `force=true`) is a low-effort
+  `draft`/`approved` state gated on `reliability.pass_rate`, `invoke()` refusing `draft` without
+  `force=true`) is a low-effort
   extension of the reliability work already built - would build it next, since the signal it would
   gate on already exists. Cross-tenant canonicalization is the more expensive item - correctly
   last in priority, not attempted.
